@@ -139,6 +139,17 @@ fixed_prefix = nonmember_seq_1 + nonmember_seq_2 + ... + nonmember_seq_7
 
 之后所有 226 条待检测 sequence 都共用这个 fixed non-member prefix。代码也会保存抽出来的 member prefix，但主流程里真正加到样本前面的，是 non-member prefix。
 
+这个 prefix 一旦生成并写入 `prefix_data.json`，内容和拼接顺序都会固定。后续不加 `--overwrite`、不删除缓存、也不换输出目录时，代码会复用同一组 non-member sequence，并按同样顺序拼接。
+
+论文里分析 prefix 随机性时，主要比较两种情况：
+
+```text
+Fixed Prefix   # 固定同一组 non-member prefix，只看 sampling seed 带来的波动
+Random Prefix  # 每次重新随机选 non-member prefix，看 prefix 组成带来的波动
+```
+
+表中的均值和下标标准差通常来自 5 次完整实验的 AUC。例如随机选 5 组不同 prefix，各跑出一个 AUC，再计算这 5 个 AUC 的 mean 和 standard deviation。直观结论是：sampling seed 的影响较小，随机换 prefix 的影响更大。
+
 ### 2. 对每条 sequence 做两遍采样
 
 正式 SimMIA 使用：
