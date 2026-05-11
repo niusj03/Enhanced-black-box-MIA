@@ -27,19 +27,27 @@ def relative_word_by_word_hf(
         model=model,
         instance=instance,
     )
-    prefix_results = word_by_word_hf(
+    nonmember_prefix_results = word_by_word_hf(
         rank=rank,
         args=args,
         model=model,
         instance=instance,
-        prefix_text=instance["prefix"],
+        prefix_text=instance["nonmember_prefix"],
+    )
+    member_prefix_results = word_by_word_hf(
+        rank=rank,
+        args=args,
+        model=model,
+        instance=instance,
+        prefix_text=instance["member_prefix"],
     )
 
     return {
         **instance,
         "label_results": results["label_results"],
         "sample_results": results["sample_results"],
-        "prefix_sample_results": prefix_results["sample_results"],
+        "nonmember_prefix_sample_results": nonmember_prefix_results["sample_results"],
+        "member_prefix_sample_results": member_prefix_results["sample_results"],
     }
 
 
@@ -158,19 +166,27 @@ async def relative_word_by_word_api(
         model=model,
         instance=instance,
     )
-    prefix_results = await word_by_word_api(
+    nonmember_prefix_results = await word_by_word_api(
         rank=rank,
         args=args,
         model=model,
         instance=instance,
-        prefix_text=instance["prefix"],
+        prefix_text=instance["nonmember_prefix"],
+    )
+    member_prefix_results = await word_by_word_api(
+        rank=rank,
+        args=args,
+        model=model,
+        instance=instance,
+        prefix_text=instance["member_prefix"],
     )
 
     return {
         **instance,
         "label_results": results["label_results"],
         "sample_results": results["sample_results"],
-        "prefix_sample_results": prefix_results["sample_results"],
+        "nonmember_prefix_sample_results": nonmember_prefix_results["sample_results"],
+        "member_prefix_sample_results": member_prefix_results["sample_results"],
     }
 
 

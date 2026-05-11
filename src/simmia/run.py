@@ -128,6 +128,7 @@ def cli_main():
         predictions,
         answers,
         output_dir,
+        result_name=args.result_name,
     )
     if args.data == "iamgroot42/mimir":
         dataset_name = f"MIMIR/{args.split}/{args.sub_dataset}"

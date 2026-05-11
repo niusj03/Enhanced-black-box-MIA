@@ -97,6 +97,7 @@ cmd=(
   --postprocess process_relative_word_data
   --inference relative_label_ratio
   --output_dir simmia_out
+  --result_name simmia_hard
   --num_samples "$NUM_SAMPLES"
   --data "$DATA"
   --sub_dataset "$SUB_DATASET"

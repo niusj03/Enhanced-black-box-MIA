@@ -104,7 +104,58 @@ API 模型可以用 `--concurrency` 控制并发请求数量。
 
 ## 核心实现流程
 
-整个流程在 `src/simmia/run.py` 里串起来。以 `SimMIA/WikiMIA-25` 的 `paper_subset` 为例，它原始有 240 条 sequence，包含 120 条 member 和 120 条 non-member。
+### 整体流程
+
+整个流程由 `simmia.benchmark` 串起来：
+
+1. 入口命令是 `simmia.benchmark`，由 `setup.py` 第 35 行注册到 `src/simmia/run.py` 的 `cli_main`，也就是第 45 行。
+2. 命令行参数在 `src/simmia/options.py` 第 11 行的 `add_arguments` 里定义，例如 `--sampling`、`--postprocess`、`--inference`。
+3. 数据加载、member/non-member 划分、prefix bank 构造和 `full_dataset.jsonl` 缓存在 `src/simmia/benchmark.py` 第 75 行的 `process_data` 里完成。
+4. `src/simmia/run.py` 会先调用 sampling 方法生成或续写 `records.jsonl`，然后按需运行 postprocess，再运行 inference，最后调用 `src/simmia/utils/eval.py` 第 20 行的 `evaluate` 计算 AUC、Accuracy、TPR，并保存 ROC 图。
+
+正式 soft SimMIA 使用这组三件套：
+
+```bash
+--sampling relative_word_by_word
+--postprocess process_relative_word_data
+--inference relative_semantic_ratio
+```
+
+它们分别控制：
+
+```text
+--sampling relative_word_by_word
+  -> src/simmia/sampling/word_by_word.py
+  -> relative_word_by_word_hf / relative_word_by_word_api
+  -> 调用目标 LLM 做 word-by-word sampling，并写入 records.jsonl
+
+--postprocess process_relative_word_data
+  -> src/simmia/postprocess/process_word.py
+  -> process_relative_word_data
+  -> 从 records.jsonl 读取采样结果，计算 first-word 频率、embedding 相似度和 label 频率
+
+--inference relative_semantic_ratio
+  -> src/simmia/inference/relative.py
+  -> relative_semantic_ratio
+  -> 用 postprocess 后的统计计算 membership score
+```
+
+SimMIA* hard 版本仍使用 `--sampling relative_word_by_word` 和 `--postprocess process_relative_word_data`，但把 inference 换成：
+
+```bash
+--inference relative_label_ratio
+--smoothing
+```
+
+SaMIA baseline 则走另一条路径：
+
+```bash
+--sampling generate_all_remaining
+--inference rouge_n
+--prefix_ratio 0.5
+```
+
+它由 `src/simmia/sampling/generate_all_remaining.py` 生成后半段 continuation，再由 `src/simmia/inference/rouge_n.py` 用 ROUGE-1 评分。
 
 ### 1. 数据和 fixed prefix
 
@@ -131,15 +182,16 @@ API 模型可以用 `--concurrency` 控制并发请求数量。
 总共 226 条待检测 sequence
 ```
 
-当前 SimMIA 实际会把 7 条 non-member sequence 拼成一个固定 prefix：
+当前代码会把 7 条 non-member sequence 和 7 条 member sequence 分别拼成两个固定 prefix：
 
 ```text
-fixed_prefix = nonmember_seq_1 + nonmember_seq_2 + ... + nonmember_seq_7
+nonmember_prefix = nonmember_seq_1 + nonmember_seq_2 + ... + nonmember_seq_7
+member_prefix    = member_seq_1    + member_seq_2    + ... + member_seq_7
 ```
 
-之后所有 226 条待检测 sequence 都共用这个 fixed non-member prefix。代码也会保存抽出来的 member prefix，但主流程里真正加到样本前面的，是 non-member prefix。
+之后所有 226 条待检测 sequence 都共用这两个 fixed prefix。原始 SimMIA 的分数仍然只使用 `nonmember_prefix` 这一路来复现论文里的 non-member prefix 扰动；`member_prefix` 目前提前保存和采样，方便后续做 Step 2 的 contrastive 实验。
 
-这个 prefix 一旦生成并写入 `prefix_data.json`，内容和拼接顺序都会固定。后续不加 `--overwrite`、不删除缓存、也不换输出目录时，代码会复用同一组 non-member sequence，并按同样顺序拼接。
+这两个 prefix 一旦生成并写入 `prefix_data.json`，内容和拼接顺序都会固定。后续不加 `--overwrite`、不删除缓存、也不换输出目录时，代码会复用同一组 member/non-member prefix bank，并按同样顺序拼接。
 
 论文里分析 prefix 随机性时，主要比较两种情况：
 
@@ -150,19 +202,20 @@ Random Prefix  # 每次重新随机选 non-member prefix，看 prefix 组成带�
 
 表中的均值和下标标准差通常来自 5 次完整实验的 AUC。例如随机选 5 组不同 prefix，各跑出一个 AUC，再计算这 5 个 AUC 的 mean 和 standard deviation。直观结论是：sampling seed 的影响较小，随机换 prefix 的影响更大。
 
-### 2. 对每条 sequence 做两遍采样
+### 2. 对每条 sequence 做三遍采样
 
-正式 SimMIA 使用：
+正式 SimMIA 和 SimMIA* 都使用：
 
 ```bash
 --sampling relative_word_by_word
 ```
 
-对每条待检测 sequence，它会跑两遍 word-by-word sampling：
+这一步由 `src/simmia/sampling/word_by_word.py` 第 18 行的 `relative_word_by_word_hf` 控制。对每条待检测 sequence，它现在会跑三遍 word-by-word sampling：
 
 ```text
 原始上下文：sequence 自己
-扰动上下文：fixed non-member prefix + sequence 自己
+non-member 扰动上下文：nonmember_prefix + sequence 自己
+member 扰动上下文：member_prefix + sequence 自己
 ```
 
 假设当前 sequence 是：
@@ -197,10 +250,13 @@ Conference
 采样结果会先写入 `records.jsonl`，主要包含：
 
 ```text
-label_results          # 真实 next word 序列
-sample_results         # 原始上下文下的采样统计
-prefix_sample_results  # 加 fixed prefix 后的采样统计
+label_results                       # 真实 next word 序列
+sample_results                      # 原始上下文下的 word-level 采样统计
+nonmember_prefix_sample_results     # 加 fixed non-member prefix 后的 word-level 采样统计
+member_prefix_sample_results        # 加 fixed member prefix 后的 word-level 采样统计，供后续实验使用
 ```
+
+当前原始 SimMIA / SimMIA* 后续只使用 `sample_results` 和 `nonmember_prefix_sample_results`。`member_prefix_sample_results` 会保存进缓存，但暂时不参与当前论文方法的 postprocess 和 inference。
 
 ### 3. Postprocess：把采样结果变成 word-level 统计
 
@@ -210,13 +266,22 @@ prefix_sample_results  # 加 fixed prefix 后的采样统计
 --postprocess process_relative_word_data
 ```
 
-这一步在 `src/simmia/postprocess/process_word.py`。它不会重新调用目标 LLM，而是读取 sampling 的结果，对每个 word position 做统计：
+这一步在 `src/simmia/postprocess/process_word.py`。底层统计函数是第 48 行的 `_process_word_data`，relative 入口是第 147 行的 `process_relative_word_data`。它不会重新调用目标 LLM，而是读取 sampling 的结果，对每个 word position 做统计：
 
 ```text
 真实 word
 采样 first word 的频率分布
 真实 word 和每个采样 word 的 embedding 语义相似度
 ```
+
+当前 `process_relative_word_data` 会处理：
+
+```text
+sample_results
+nonmember_prefix_sample_results
+```
+
+它暂时不会处理 `member_prefix_sample_results`，这一路 raw sampling 是为了之后新增实验方法时复用。
 
 soft SimMIA 会得到：
 
@@ -239,11 +304,11 @@ label_freq_target / prefix_label_freq_target
 --inference relative_semantic_ratio
 ```
 
-这一步在 `src/simmia/inference/relative.py`。它使用 postprocess 得到的 word-level 统计来算每个位置的分数：
+这一步在 `src/simmia/inference/relative.py` 第 40 行的 `relative_semantic_ratio`。它使用 postprocess 得到的 word-level 统计来算每个位置的分数：
 
 ```text
 orig_score = semantic_similarity · sample_frequency
-prefix_score = prefix_semantic_similarity · prefix_sample_frequency
+prefix_score = nonmember_prefix_semantic_similarity · nonmember_prefix_sample_frequency
 ratio = prefix_score / orig_score
 ```
 
@@ -253,7 +318,7 @@ ratio = prefix_score / orig_score
 membership_score = -mean(ratio)
 ```
 
-所有 sequence 都得到一个 score 后，`src/simmia/utils/eval.py` 会根据真实 label 计算 AUC、Accuracy、TPR@1%FPR、TPR@5%FPR、TPR@10%FPR，并保存 ROC 图。
+所有 sequence 都得到一个 score 后，`src/simmia/utils/eval.py` 第 20 行的 `evaluate` 会根据真实 label 计算 AUC、Accuracy、TPR@1%FPR、TPR@5%FPR、TPR@10%FPR，并保存 ROC 图。
 
 ### 5. 输出和缓存
 
@@ -267,12 +332,13 @@ simmia_out/WikiMIA-25/paper_subset/pythia-6.9b/7/
 
 `full_dataset.jsonl`
 
-本次实验真正用于评估的样本缓存。它不是原始 Hugging Face 数据全集，而是预处理后的待检测 sequence。以 `paper_subset` 和 `num_shots=7` 为例，这里会有 226 行；每一行包含待检测文本、真实 label，以及固定 non-member prefix：
+本次实验真正用于评估的样本缓存。它不是原始 Hugging Face 数据全集，而是预处理后的待检测 sequence。以 `paper_subset` 和 `num_shots=7` 为例，这里会有 226 行；每一行包含待检测文本、真实 label，以及两个固定 prefix：
 
 ```text
-input   # 待检测文本
-label   # 真实答案，1 是 member，0 是 non-member
-prefix  # 固定的 non-member prefix
+input             # 待检测文本
+label             # 真实答案，1 是 member，0 是 non-member
+nonmember_prefix  # 固定的 non-member prefix，当前 SimMIA/SimMIA* 复现会使用它
+member_prefix     # 固定的 member prefix，当前只提前保存，供后续 contrastive 实验使用
 ```
 
 `prefix_data.json`
@@ -284,23 +350,32 @@ member     # 抽出的 member sequence
 nonmember  # 抽出的 non-member sequence
 ```
 
-当前 SimMIA 主流程实际会把 `nonmember` 里的 sequence 拼成 fixed prefix。保存这个文件是为了下次运行时复用同一组 prefix，不重新随机抽。
+当前代码会把 `nonmember` 里的 sequence 拼成 `nonmember_prefix`，把 `member` 里的 sequence 拼成 `member_prefix`。保存这个文件是为了下次运行时复用同一组 prefix bank，不重新随机抽。
 
 `records.jsonl`
 
 最重要、也最耗时生成的 sampling 缓存。每一行对应 `full_dataset.jsonl` 里的一条样本，并额外保存目标模型的采样统计：
 
 ```text
-label_results          # 真实 next word 序列
-sample_results         # 原始上下文下的 word-level 采样统计
-prefix_sample_results  # 加 fixed prefix 后的 word-level 采样统计
+label_results                       # 真实 next word 序列
+sample_results                      # 原始上下文下的 word-level 采样统计
+nonmember_prefix_sample_results     # fixed non-member prefix 下的 word-level 采样统计
+member_prefix_sample_results        # fixed member prefix 下的 word-level 采样统计
 ```
 
-后续的 postprocess 和 inference 都依赖这个文件；如果它已经完整存在，就不需要重新跑昂贵的 sampling。
+后续的 postprocess 和 inference 都依赖这个文件；如果它已经完整存在，就不需要重新跑昂贵的 sampling。当前 SimMIA/SimMIA* 只读取 `sample_results` 和 `nonmember_prefix_sample_results` 来复现原方法，`member_prefix_sample_results` 是预先缓存的扩展信号。
+
+`simmia_roc_tpr_at_5_fpr.png`
+
+正式 SimMIA soft 版本的最终评估图。程序根据每条样本的 membership score 和真实 label 画 ROC 曲线，并标出 TPR@5%FPR。
+
+`simmia_hard_roc_tpr_at_5_fpr.png`
+
+SimMIA* hard 版本的最终评估图。`scripts/run_simmia_soft.sh` 和 `scripts/run_simmia_hard.sh` 共用同一个 `records.jsonl`，但通过 `--result_name` 输出不同文件名，所以可以在同一个文件夹下同时保留两张图。
 
 `roc_tpr_at_5_fpr.png`
 
-最终评估图。程序根据每条样本的 membership score 和真实 label 画 ROC 曲线，并标出 TPR@5%FPR。
+兼容旧命令的默认评估图。如果直接调用 `simmia.benchmark` 且不传 `--result_name`，仍会生成这个文件。
 
 这些文件会被复用。不加 `--overwrite` 时，代码会优先读取已有缓存；如果 `records.jsonl` 只完成了一部分，重新运行同一命令通常会从未完成的位置继续。
 
@@ -377,6 +452,10 @@ hard SimMIA 常用，对真实词频做平滑。
 `--exact_match_number`
 
 遇到数字任务时可以打开。脚本里对 MIMIR 的 `dm_mathematics` 会自动打开它。
+
+`--result_name`
+
+控制 ROC 图文件名。比如 `--result_name simmia` 会输出 `simmia_roc_tpr_at_5_fpr.png`；`--result_name simmia_hard` 会输出 `simmia_hard_roc_tpr_at_5_fpr.png`。如果不传这个参数，就保持旧文件名 `roc_tpr_at_5_fpr.png`。
 
 `--overwrite`
 

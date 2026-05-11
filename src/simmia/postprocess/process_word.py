@@ -160,7 +160,7 @@ def process_relative_word_data(
     prefix_sample_similarity, prefix_sample_frequencies, prefix_label_frequencies = (
         _process_word_data(
             label_results=instance["label_results"],
-            sample_results=instance["prefix_sample_results"],
+            sample_results=instance["nonmember_prefix_sample_results"],
             embedding_model=embedder,
             smoothing=args.smoothing,
             exact_match_number=args.exact_match_number,

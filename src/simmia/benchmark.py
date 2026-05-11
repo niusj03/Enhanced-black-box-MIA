@@ -91,6 +91,9 @@ def process_data(args: argparse.Namespace, output_dir: str) -> List[dict]:
         member_prefix_text = "".join(member_data_prefix)
         nonmember_prefix_text = "".join(nonmember_data_prefix)
         logger.info(f"prefix is {nonmember_prefix_text}")
+        for row in full_data:
+            row["nonmember_prefix"] = nonmember_prefix_text
+            row["member_prefix"] = member_prefix_text
         logger.info("Loaded existing member, nonmember, and full datasets.")
 
     else:
@@ -151,7 +154,8 @@ def process_data(args: argparse.Namespace, output_dir: str) -> List[dict]:
         logger.info(f"prefix is {nonmember_prefix_text}")
 
         for row in full_data:
-            row["prefix"] = nonmember_prefix_text
+            row["nonmember_prefix"] = nonmember_prefix_text
+            row["member_prefix"] = member_prefix_text
 
         # Save for future use
         with open(prefix_path.replace(".jsonl", ".json"), "w", encoding="utf-8") as f:

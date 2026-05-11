@@ -32,6 +32,12 @@ def add_arguments(parser: argparse.ArgumentParser):
         help="the directory to store the result",
     )
     parser.add_argument(
+        "--result_name",
+        type=str,
+        default=None,
+        help="optional prefix for the ROC plot filename",
+    )
+    parser.add_argument(
         "--overwrite", action="store_true", help="whether to rewrite the cached result"
     )
 
