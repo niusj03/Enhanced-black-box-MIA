@@ -63,34 +63,61 @@ def word_by_word_hf(
     text = instance["input"]
 
     num_samples = args.num_samples
+    sampling_batch_size = getattr(args, "sampling_batch_size", None)
+    if sampling_batch_size is None:
+        initial_batch_size = num_samples
+    else:
+        initial_batch_size = min(int(sampling_batch_size), num_samples)
+        if initial_batch_size < 1:
+            raise ValueError("sampling_batch_size must be at least 1.")
 
     sample_results = []
     label_results = []
     with torch.inference_mode():
-        past_key_values = transformers.DynamicCache()
-        sample_kwargs = {
-            "max_new_tokens": 3,
-            "pad_token_id": model.tokenizer.eos_token_id,
-            "output_scores": True,
-            "return_dict_in_generate": True,
-            "do_sample": True,
-            "top_k": args.top_k,
-            "use_cache": True,
-            "past_key_values": past_key_values,
-        }
+        def new_sample_state():
+            past_key_values = transformers.DynamicCache()
+            sample_kwargs = {
+                "max_new_tokens": 3,
+                "pad_token_id": model.tokenizer.eos_token_id,
+                "output_scores": True,
+                "return_dict_in_generate": True,
+                "do_sample": True,
+                "top_k": args.top_k,
+                "use_cache": True,
+                "past_key_values": past_key_values,
+            }
+            return past_key_values, sample_kwargs
+
+        def retry_reason(error: RuntimeError):
+            message = str(error)
+            if "CUDA out of memory" in message:
+                return "CUDA OOM"
+            if "Key and Value must have the same sequence length" in message:
+                return "Key/Value cache mismatch"
+            return None
+
+        past_key_values, sample_kwargs = new_sample_state()
+        cache_batch_size = None
 
         words = word_tokenize(text)
         prefix = prefix_text + words[0]
         prefix_tokens = model.tokenizer(prefix, return_tensors="pt")
         for word in words[1:]:
-            batch_size = word_by_word_hf.__dict__.get("batch_size", num_samples)
+            batch_size = min(
+                word_by_word_hf.__dict__.get("batch_size", initial_batch_size),
+                initial_batch_size,
+            )
             sample_texts = []
             while len(sample_texts) < num_samples:
+                current_batch_size = min(batch_size, num_samples - len(sample_texts))
+                if cache_batch_size not in (None, current_batch_size):
+                    past_key_values, sample_kwargs = new_sample_state()
+                    cache_batch_size = None
                 try:
                     sample_generation = model.lazy_generate(
                         input_ids=prefix_tokens["input_ids"].to(device),
                         attention_mask=prefix_tokens["attention_mask"].to(device),
-                        num_return_sequences=batch_size,
+                        num_return_sequences=current_batch_size,
                         **sample_kwargs,
                     )
                     _sample_texts = model.tokenizer.batch_decode(
@@ -103,25 +130,25 @@ def word_by_word_hf(
                     past_key_values.crop(
                         max(prefix_tokens["input_ids"].shape[1] - 1, 0)
                     )
+                    cache_batch_size = current_batch_size
                 except RuntimeError as e:
-                    if "CUDA out of memory." in str(e):
+                    reason = retry_reason(e)
+                    if reason is not None:
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        next_batch_size = batch_size // 2
                         logger.info(
-                            f"[{device}] Reducing batch_size=[{batch_size} -> {batch_size // 2}]"
+                            f"[{device}] Reducing batch_size=[{batch_size} -> {next_batch_size}] after {reason}"
                         )
-                        batch_size = batch_size // 2
-                        if batch_size < 1:
+                        if next_batch_size < 1:
                             raise RuntimeError(
-                                "CUDA out of memory, while batch_size reaches 0."
-                            )
-                        past_key_values.crop(
-                            max(prefix_tokens["input_ids"].shape[1] - 1, 0)
-                        )
-                        past_key_values.batch_select_indices([0])
-                        past_key_values.batch_repeat_interleave(batch_size)
+                                f"{reason}, while batch_size reaches 0."
+                            ) from e
+                        batch_size = next_batch_size
+                        past_key_values, sample_kwargs = new_sample_state()
+                        cache_batch_size = None
                         word_by_word_hf.__dict__["batch_size"] = batch_size
                     else:
-                        # sometimes OOM may cause other exceptions, try lower `batch_size` manually in these cases
-                        # e.g., "RuntimeError: Key and Value must have the same sequence length"
                         raise e
             sample_texts = sample_texts[:num_samples]
 

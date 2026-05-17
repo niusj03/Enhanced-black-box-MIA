@@ -134,6 +134,44 @@ member_prefix_sample_results       # member prefix 下的 word-level sampling �
 
 这个改动不改变当前 SimMIA / SimMIA* 的复现逻辑：现有 `process_relative_word_data` 仍只处理 `sample_results` 和 `nonmember_prefix_sample_results`，然后交给 `relative_semantic_ratio` 或 `relative_label_ratio` 计算原方法分数。新增的 `member_prefix_sample_results` 暂时只作为 raw cache 保存，方便后续实验直接读取。
 
+### 长 prefix / 大模型 sampling 的 KV cache 稳定性问题
+
+在生成新的三路 sampling cache 时，我们遇到过两个和 sampling 执行稳定性相关的问题，主要出现在 LLaMA-13B / OPT-6.7B / GPT-NeoX-20B 这类较大模型、较长 WikiMIA length 或较长 fixed prefix 的组合上：
+
+1. **CUDA OOM**: 原始实现默认一次 `generate(num_return_sequences=num_samples)`，当 `num_samples=100` 且 prompt/prefix 较长时，单次 generation batch 太大，容易显存不足。
+2. **HF KV cache length mismatch**: 部分模型在长 prefix + batched generation + `past_key_values` 复用时会报 `Key and Value must have the same sequence length`。这不是 SimMIA / SimMIA* 的 scoring 逻辑问题，而是 HuggingFace generation cache 在失败或长上下文下可能进入不一致状态。
+
+为了解决这个问题，我们对 `src/simmia/sampling/word_by_word.py` 做了最小稳定性改动：
+
+* 新增可选运行参数 `sampling_batch_size`，仍然通过已有 `--params` 入口传入，例如：
+
+```bash
+--params sampling_batch_size:25
+```
+
+* `sampling_batch_size` 只控制单次 `generate` 的 chunk 大小，不改变总采样数。也就是说，`--num_samples 100` 仍然会为每个 word 采满 100 个样本，只是可能拆成多轮 `25 + 25 + 25 + 25` 或更小的 batch。
+* 默认不传 `sampling_batch_size` 时保持旧行为：初始 batch size 等于 `num_samples`。
+* 将以下错误视为 retryable：
+
+```text
+CUDA out of memory
+Key and Value must have the same sequence length
+```
+
+* 当 retryable error 出现时，代码会：
+  * 清理 CUDA cache；
+  * 将 batch size 减半，例如 `100 -> 50 -> 25 -> 12 -> 6 -> 3 -> 1`；
+  * 重建 fresh `transformers.DynamicCache()` 和 generation kwargs，避免复用可能已经损坏的 `past_key_values`；
+  * 如果 batch size 已经降到 1 仍失败，则继续抛错，说明该组合需要更短 prefix 或更小上下文。
+
+这个修复只影响 sampling 的执行方式和稳定性，不改变 SimMIA / SimMIA* 的算法定义。hard SimMIA* 仍使用 `relative_label_ratio`，soft SimMIA 仍使用 `relative_semantic_ratio`；当前复现仍只消费 `sample_results` 和 `nonmember_prefix_sample_results`，`member_prefix_sample_results` 仍作为后续 contrastive 方法的 raw cache。
+
+迁移到其他机器继续跑 cache 时，建议按模型和数据集选择初始 `sampling_batch_size`：
+
+* WikiMIA-25 的 Pythia-6.9B / Qwen3-8B-Base：`num_samples=10`，可以用 `sampling_batch_size:100`，实际会被截断成 10。
+* WikiMIA 的 GPT-NeoX-20B：建议保守一些。length32/64 可以先用 `sampling_batch_size:2`，length128 建议直接用 `sampling_batch_size:1`。
+* LLaMA-13B / 长 WikiMIA length：如果日志频繁出现 OOM 降 batch，重启时直接用稳定后的 batch，例如 length128 常见需要 3 左右。
+
 ### 改进方案设计
 
 为了提升 SimMIA 的稳定性和统计可解释性，我们提出以下逐步改进方案。新的顺序应该先从 member prefix 开始，因为现在 member-prefix sampling 已经被提前写进 `records.jsonl`；在已有缓存上测试它只需要新增后处理/打分逻辑，不需要立刻重新调用目标 LLM。之后再考虑改进 word-level score，最后才做外层 prefix 扰动。
