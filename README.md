@@ -71,6 +71,16 @@ cd simmia
 conda create -n simmia python=3.12
 conda activate simmia
 pip install -e .
+
+# Manully download the nltk tokenizer
+python -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab')"
+python -c "import nltk; nltk.data.find('tokenizers/punkt'); nltk.data.find('tokenizers/punkt_tab/english'); print('NLTK tokenizer data OK')"
+
+# when torch version is not compatble with CUDA
+python -c "import torch; print('torch:', torch.version); print('torch cuda:', torch.version.cuda); print('cuda available:', torch.cuda.is_available())"
+pip uninstall -y torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
 ```
 
 If you want to experiment with closed-source LLM APIs, please run `pip install -e .[api]`.
@@ -160,6 +170,45 @@ Valid `SUB_DATASET` values for different `DATA`:
 
 > [!NOTE]
 > For SimMIA with `dm_mathematics` in MIMIR, the `--exact_match_number` flag is automatically enabled to use exact numeric matching instead of word similarity for numerical values.
+
+Run the following bash commmands to store the cache for sampling records.
+```
+# RUN the MIMIR
+RUN_WIKIMIA=0 RUN_MIMIR=1 RUN_WIKIMIA25=0 RUN_API=0 \
+MIMIR_MODELS="EleutherAI/pythia-160m EleutherAI/pythia-1.4b EleutherAI/pythia-2.8b EleutherAI/pythia-6.9b" \
+MIMIR_SUBSETS="wikipedia_(en) github pile_cc pubmed_central arxiv dm_mathematics hackernews" \
+nohup bash scripts/run_paper_simmia_cache_queue.sh \
+  "0 1 2 3 4 5 6 7" "" \
+  --prefix_len 50 \
+  --params sampling_batch_size:100 \
+  > logs/simmia_cache_queue.mimir_wikimia25_prefix50_bs100.nohup.log 2>&1 &
+
+% RUN the WikiMIA-25
+RUN_WIKIMIA=0 RUN_MIMIR=0 RUN_WIKIMIA25=1 RUN_API=0 \
+WIKIMIA25_MODELS="EleutherAI/pythia-6.9b Qwen/Qwen3-8B-Base" \
+WIKIMIA25_SUBSETS="paper_subset" \
+nohup bash scripts/run_paper_simmia_cache_queue.sh \
+  "0 1 2 3 4 5 6 7" "" \
+  --params sampling_batch_size:100 \
+  > logs/simmia_cache_queue.wikimia25_pythia69b_qwen3_8b_bs100.nohup.log 2>&1 &
+
+
+RUN_WIKIMIA=1 RUN_MIMIR=0 RUN_WIKIMIA25=0 \
+WIKIMIA_MODELS="EleutherAI/gpt-neox-20b" \
+WIKIMIA_LENGTHS="32 64" \
+nohup bash scripts/run_paper_simmia_cache_queue.sh \
+  "0 1 2 3 4 5 6 7" "" \
+  --params sampling_batch_size:2 \
+  > logs/simmia_cache_queue.gptneox20b_wikimia_32_64_bs2.nohup.log 2>&1 &
+
+RUN_WIKIMIA=1 RUN_MIMIR=0 RUN_WIKIMIA25=0 \
+WIKIMIA_MODELS="EleutherAI/gpt-neox-20b" \
+WIKIMIA_LENGTHS="128" \
+nohup bash scripts/run_paper_simmia_cache_queue.sh \
+  "0 1 2 3 4 5 6 7" "" \
+  --params sampling_batch_size:1 \
+  > logs/simmia_cache_queue.gptneox20b_wikimia_128_bs1.nohup.log 2>&1 &
+```
 
 To reproduce the results of most **gray-box** MIAs (e.g., Loss/Reference/Zlib/Neighborhood/Min-K%/Min-K%++/ReCaLL) reported in the paper, please refer to the official **[MIMIR](https://github.com/iamgroot42/mimir)** repo.
 
