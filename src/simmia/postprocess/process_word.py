@@ -8,12 +8,13 @@ from typing import Tuple, List, Any
 from collections import Counter
 
 from simmia._internal import POSTPROCESS_METHODS
-from simmia.utils import extract_first_word
+from simmia.utils import extract_first_word, get_start_idx
 
 
 __all__ = [
     "process_word_data",
     "process_relative_word_data",
+    "process_wpmia_word_data",
 ]
 
 
@@ -118,6 +119,95 @@ def _process_word_data(
     return sample_similarity, sample_frequencies, label_frequencies
 
 
+def _to_float_array(values: Any) -> np.ndarray:
+    if hasattr(values, "detach"):
+        values = values.detach().cpu().numpy()
+    return np.asarray(values, dtype=float)
+
+
+def _counter_first_words(sample_token_count: List[Tuple[str, int]]) -> Counter:
+    sample_word_counter = Counter()
+    for token, count in sample_token_count:
+        word = extract_first_word(token)
+        sample_word_counter.update({word: count})
+    return sample_word_counter
+
+
+def _remember_word(word: str, words: List[str], seen: set) -> None:
+    if word not in seen:
+        seen.add(word)
+        words.append(word)
+
+
+def _normalize_rows(embeddings: np.ndarray) -> np.ndarray:
+    embeddings = _to_float_array(embeddings)
+    if embeddings.ndim == 1:
+        embeddings = embeddings.reshape(1, -1)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1.0, norms)
+    return embeddings / norms
+
+
+def _wpmia_record_log_likelihoods(
+    label_results: List[str],
+    sample_results_by_route: List[List[List[Tuple[str, int]]]],
+    embedding_model: sentence_transformers.SentenceTransformer,
+    tau: float,
+    exact_match_number: bool,
+    start_idx: int,
+    epsilon: float = 1e-8,
+) -> Tuple[float, float, float]:
+    prepared = []
+    unique_words = []
+    seen_words = set()
+
+    for label_token, *route_samples in zip(
+        label_results[start_idx:],
+        *(route[start_idx:] for route in sample_results_by_route),
+    ):
+        label_word = extract_first_word(label_token)
+        _remember_word(label_word, unique_words, seen_words)
+
+        counters = [_counter_first_words(samples) for samples in route_samples]
+        for counter in counters:
+            for word in counter.keys():
+                _remember_word(word, unique_words, seen_words)
+        prepared.append((label_word, counters))
+
+    if not prepared:
+        return 0.0, 0.0, 0.0
+
+    embeddings = embedding_model.encode(unique_words, show_progress_bar=False)
+    normalized_embeddings = _normalize_rows(embeddings)
+    embedding_by_word = dict(zip(unique_words, normalized_embeddings))
+
+    log_likelihoods = np.zeros(len(sample_results_by_route), dtype=float)
+    for label_word, counters in prepared:
+        label_embedding = embedding_by_word[label_word]
+        label_is_number = exact_match_number and is_number(label_word)
+
+        for route_idx, counter in enumerate(counters):
+            total = sum(counter.values())
+            if total <= 0:
+                log_likelihoods[route_idx] += np.log(epsilon)
+                continue
+
+            probability = 0.0
+            for sample_word, count in counter.items():
+                if label_is_number and is_number(sample_word):
+                    score = (
+                        1.0 if numbers_equal(label_word, sample_word) else -1.0
+                    )
+                else:
+                    score = float(
+                        np.dot(label_embedding, embedding_by_word[sample_word])
+                    )
+                probability += (count / total) * np.exp((score - 1.0) / tau)
+            log_likelihoods[route_idx] += np.log(epsilon + probability)
+
+    return tuple(float(x) for x in log_likelihoods)
+
+
 @POSTPROCESS_METHODS.register("process_word_data")
 def process_word_data(
     rank: int,
@@ -175,6 +265,51 @@ def process_relative_word_data(
             "prefix_sem_target": prefix_sample_similarity,
             "prefix_freq_target": prefix_sample_frequencies,
             "prefix_label_freq_target": prefix_label_frequencies,
+        }
+    )
+    return instance
+
+
+@POSTPROCESS_METHODS.register("process_wpmia_word_data")
+def process_wpmia_word_data(
+    rank: int,
+    args: argparse.Namespace,
+    embedder: Any,
+    instance: dict,
+) -> dict:
+    required_fields = [
+        "label_results",
+        "sample_results",
+        "nonmember_prefix_sample_results",
+        "member_prefix_sample_results",
+    ]
+    missing = [field for field in required_fields if field not in instance]
+    if missing:
+        raise KeyError(
+            "WPMIA requires new-format records.jsonl with explicit raw, "
+            "nonmember-prefix, and member-prefix sampling fields. Missing: "
+            + ", ".join(missing)
+        )
+
+    start_idx = get_start_idx(len(instance["label_results"]), args.prefix_ratio)
+    wpmia_L0, wpmia_Lnm, wpmia_Lm = _wpmia_record_log_likelihoods(
+        label_results=instance["label_results"],
+        sample_results_by_route=[
+            instance["sample_results"],
+            instance["nonmember_prefix_sample_results"],
+            instance["member_prefix_sample_results"],
+        ],
+        embedding_model=embedder,
+        tau=args.wpmia_tau,
+        exact_match_number=args.exact_match_number,
+        start_idx=start_idx,
+    )
+
+    instance.update(
+        {
+            "wpmia_L0": wpmia_L0,
+            "wpmia_Lnm": wpmia_Lnm,
+            "wpmia_Lm": wpmia_Lm,
         }
     )
     return instance

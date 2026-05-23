@@ -23,7 +23,7 @@ set -euo pipefail
 #     > logs/simmia_cache_queue.nohup.log 2>&1 &
 #
 # Useful controls:
-#   METHODS="hard soft"      # hard=SimMIA*, soft=SimMIA; hard first creates records.jsonl
+#   METHODS="hard soft"      # hard=SimMIA*, soft=SimMIA; add wpmia to score WPMIA
 #   RUN_WIKIMIA=1            # WikiMIA table workloads
 #   RUN_MIMIR=1              # MIMIR table workloads
 #   RUN_WIKIMIA25=1          # WikiMIA-25 open-model workloads
@@ -150,6 +150,7 @@ build_wrapper_cmd() {
   case "$method" in
     hard) script="scripts/run_simmia_hard.sh" ;;
     soft) script="scripts/run_simmia_soft.sh" ;;
+    wpmia) script="scripts/run_wpmia.sh" ;;
     samia) script="scripts/run_samia.sh" ;;
     *)
       echo "Unknown method: $method" >&2

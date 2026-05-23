@@ -74,3 +74,28 @@ def relative_semantic_ratio(
         answers.append(rec["label"])
 
     return predictions, answers
+
+
+@INFERENCE_METHODS.register("wpmia_score")
+def wpmia_score(
+    args: argparse.Namespace, records: List[dict]
+) -> Tuple[List[float], List[bool]]:
+    predictions = []
+    answers = []
+    required_fields = ["wpmia_L0", "wpmia_Lnm", "wpmia_Lm"]
+
+    for rec in tqdm(records, desc=f"Inferring with [{wpmia_score.__name__}]"):
+        missing = [field for field in required_fields if field not in rec]
+        if missing:
+            raise KeyError(
+                "WPMIA inference requires records postprocessed with "
+                "process_wpmia_word_data. Missing: " + ", ".join(missing)
+            )
+
+        numerator = rec["wpmia_Lnm"] - args.wpmia_gamma * rec["wpmia_Lm"]
+        prediction = np.divide(numerator, rec["wpmia_L0"])
+        prediction = float(np.nan_to_num(prediction, nan=0.0, posinf=0.0, neginf=0.0))
+        predictions.append(prediction)
+        answers.append(rec["label"])
+
+    return predictions, answers

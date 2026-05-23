@@ -174,150 +174,250 @@ Key and Value must have the same sequence length
 
 ### 改进方案设计
 
-为了提升 SimMIA 的稳定性和统计可解释性，我们提出以下逐步改进方案。新的顺序应该先从 member prefix 开始，因为现在 member-prefix sampling 已经被提前写进 `records.jsonl`；在已有缓存上测试它只需要新增后处理/打分逻辑，不需要立刻重新调用目标 LLM。之后再考虑改进 word-level score，最后才做外层 prefix 扰动。
+这一阶段的思路是：先尽量复用已经生成好的三路 `records.jsonl` cache，不急着重新调用 target LLM。原因很直接：member-prefix sampling 已经提前写进了 cache，所以现在最低成本的方向，是只新增 postprocess / inference，用已有 sampling 结果重新打分。
 
-#### Step 1: 引入 member prefix
+当前阶段只保留两个核心动作：
 
-* **目标**: 利用新的 `member_prefix_sample_results` 和 `nonmember_prefix_sample_results` 形成 member/non-member prefix 对照，计算 contrastive membership score。
+1. 引入 member prefix，并使用已经跑好的 SimMIA / SimMIA* 三路 sampling cache；
+2. 基于已有 cache 重新计算 semantic-kernel likelihood score。
 
-* **公式**:
-  $$
-  r_i = \frac{\widehat{S}(x_i \mid P_{nm}+x_{<i}) - \widehat{S}(x_i \mid P_m+x_{<i})}{\widehat{S}(x_i \mid x_{<i})}
-  $$
+暂时不做 prefix perturbation。也就是说，这一阶段不考虑 prefix 顺序打乱、deletion、paraphrase 或 ensemble。
 
-  这里的 $\widehat{S}$ 可以先沿用 SimMIA 当前的 word-level score，也就是 embedding similarity expectation；hard 版本也可以对应使用真实 label word 的采样频率。
+#### Step 1: 构建三路 sampling cache
 
-* **sequence-level membership score**:
-  $$
-  \text{membership score} = - \frac{1}{L} \sum_{i=1}^{L} r_i
-  $$
+对于待检测文本 \(x=(x_1,\ldots,x_L)\)，在每个 word position \(i\)，我们考虑三种 context：
 
-* **实现细节**:
+$$
+c_i^0=x_{<i},\quad
+c_i^{nm}=P_{nm}\oplus x_{<i},\quad
+c_i^{m}=P_m\oplus x_{<i}.
+$$
 
-  * 不新增 target LLM sampling，直接读取新的 `records.jsonl`
-  * 使用 `sample_results` 作为 raw/original baseline
-  * 使用 `nonmember_prefix_sample_results` 作为 non-member perturbation
-  * 使用 `member_prefix_sample_results` 作为 member perturbation
-  * 新建独立 postprocess / inference 文件，避免影响原始 SimMIA 复现
+这里 \(P_{nm}\) 是由 non-member sequences 构成的 prefix，\(P_m\) 是由 member sequences 构成的 prefix，\(x_{<i}\) 是真实 word \(x_i\) 前面的文本。
 
-#### Step 2: 替换或校准 word-level score
+现在 `records.jsonl` 已经保存了这三路 sampling result：
 
-* **目标**: 在 Step 1 的 member-prefix contrastive 框架基础上，测试更稳定、更接近概率密度解释的 word-level score，同时保持对 SimMIA 框架的最小改动。
+* `sample_results`: 对应 \(c_i^0\)
+* `nonmember_prefix_sample_results`: 对应 \(c_i^{nm}\)
+* `member_prefix_sample_results`: 对应 \(c_i^m\)
+* `label_results`: 真实 target words \(x_i\)
 
-* **动机**: 原始 SimMIA 的 soft score 是 semantic similarity expectation。直接把 cosine similarity softmax 成 likelihood proxy 可能会放大候选集合内部的相对差异，因此更适合作为 kernelized semantic density score，而不是严格的 token likelihood。
+所以后续实验不需要重新调用 target LLM，只需要读取已有 `records.jsonl` 做 post-processing。
 
-* **候选公式**:
-  $$
-  S_i(P) = \sum_j f_{i,j}(P)\exp(\text{cosine}(x_i, \hat{x}_{i,j}) / \tau)
-  $$
+#### Step 2: Semantic-kernel likelihood score
 
-  或使用 log-ratio 形式：
-  $$
-  r_i = \log S_i(P_{nm}+x_{<i}) - \log S_i(P_m+x_{<i})
-  $$
+原始 gray-box log likelihood 可以写成：
 
-* **实现细节**:
+$$
+LL(x)=\sum_{i=1}^{L}\log p(x_i\mid x_{<i}).
+$$
 
-  * 内层采样 M 次已经存在于新的 `records.jsonl`
-  * 只需要替换 postprocess / inference 中的 word-level score 计算
-  * $\tau$ 为温度参数，需要做 sweep
-  * 与原始 cosine expectation 做 ablation
+在 black-box setting 里，我们拿不到真实 token probability，所以这里用 sampling 结果估计一个 word-level semantic probability，再取 log，最后聚合成 text-level pseudo log-likelihood。
 
-#### Step 3: 外层 prefix 扰动（最大规模实验）
+对于每个 context type \(q\in\{0,nm,m\}\)，设第 \(j\) 次 sampling 得到的 word 是 \(\hat{x}_{i,j}^{q}\)。用 semantic kernel 估计真实 word \(x_i\) 附近的 probability mass：
 
-* **目标**: 增加统计稳定性和鲁棒性，验证 prefix 组成变化对 Step 1 / Step 2 的影响。
+$$
+\widehat{p}_i^q
+=
+\frac{1}{M}
+\sum_{j=1}^{M}
+K_\tau(x_i,\hat{x}_{i,j}^{q}).
+$$
 
-* **扰动类型**:
+本阶段只使用下面这个 semantic kernel：
 
-  1. 顺序打乱 prefix
-  2. 删除 1-2 条 sequence
-  3. paraphrase prefix
+$$
+K_\tau(x_i,\hat{x})
+=
+\exp
+\left(
+\frac{\cos(e(x_i),e(\hat{x}))-1}{\tau}
+\right).
+$$
 
-* **公式**:
-  $$
-  \tilde{r}_i = \frac{1}{|\Delta|} \sum_{\delta \in \Delta} 
-  \frac{\widehat{S}(x_i \mid P_{nm}^{\delta}+x_{<i}) - \widehat{S}(x_i \mid P_m+x_{<i})}
-  {\widehat{S}(x_i \mid x_{<i})}
-  $$
+其中 \(e(\cdot)\) 是 word embedding，\(\tau\) 是 temperature，\(M\) 是每个 word 的 sampling 次数。
 
-  $$
-  \text{membership score} = - \frac{1}{L} \sum_{i=1}^{L} \tilde{r}_i
-  $$
+然后对每个 word-level probability estimate 取 log：
 
-* **实现细节**:
+$$
+\widehat{\ell}_i^q
+=
+\log(\epsilon+\widehat{p}_i^q).
+$$
 
-  * outer loop N 个扰动 prefix
-  * 每个扰动 prefix 都需要新的 word-by-word sampling
-  * 这是最大规模实验，应放在 Step 1 / Step 2 有正向结果之后
+这里 \(\epsilon\) 是 smoothing constant，用来避免数值为 0。
 
-#### Step 4: 评估 & ablation
+接着把 word-level score 聚合成三种 text-level log-likelihood：
 
-* ROC-AUC, TPR@FPR, FDR
-* Ablation studies:
+$$
+\widehat{L}^{0}(x)
+=
+\sum_{i=1}^{L}\widehat{\ell}_i^0,\quad
+\widehat{L}^{nm}(x)
+=
+\sum_{i=1}^{L}\widehat{\ell}_i^{nm},\quad
+\widehat{L}^{m}(x)
+=
+\sum_{i=1}^{L}\widehat{\ell}_i^{m}.
+$$
 
-  1. 无 member prefix vs 引入 member prefix
-  2. 原始 word-level score vs kernelized semantic density score
-  3. 固定 prefix vs prefix perturbation ensemble
-  4. 内层采样 M vs 外层扰动 N
+\(\widehat{L}^{0}(x)\) 是原始 context 下的 log-likelihood，\(\widehat{L}^{nm}(x)\) 是 non-member prefix 下的 conditional log-likelihood，\(\widehat{L}^{m}(x)\) 是 member prefix 下的 conditional log-likelihood。
 
-### 实验顺序与 rationale
+最后使用 sequence-level likelihood 计算 membership score：
 
-1. **Step 1: 引入 member prefix**。新的 `records.jsonl` 已经包含 raw, non-member prefix, member prefix 三路 sampling，是当前成本最低、最直接的改进方向。
-2. **Step 2: 替换或校准 word-level score**。在 Step 1 框架有效后，再测试不同 semantic score / density score 是否能进一步提升稳定性。
-3. **Step 3: 外层 prefix 扰动**。这是最大规模采样实验，主要用于验证鲁棒性和 prefix sensitivity，应最后进行。
+$$
+S_{\mathrm{WPMIA}}(x)
+=
+\frac{
+\widehat{L}^{nm}(x)
+-
+\gamma \widehat{L}^{m}(x)
+}{
+\widehat{L}^{0}(x)
+}.
+$$
 
-> 该顺序从“完全复用现有缓存”开始，再进入“只改 postprocess/inference”，最后才进入“重新大规模调用目标 LLM”。这样可以最大化利用已有缓存，并逐步降低实验不确定性。
+默认 \(\gamma=1\)，也就是：
 
-### 对于word-level scoring的thinking
+$$
+S_{\mathrm{WPMIA}}(x)
+=
+\frac{
+\widehat{L}^{nm}(x)
+-
+\widehat{L}^{m}(x)
+}{
+\widehat{L}^{0}(x)
+}.
+$$
 
-最初提出的 word-level scoring 方向不是错误的，但它不够 strong 的地方在于：它把 embedding similarity 的相对排序包装成了 likelihood / probability，而这两者之间缺少真正的概率校准。
+这里暂时不使用 per-word ratio：
 
-如果使用类似下面的形式：
+$$
+\frac{1}{L}
+\sum_{i=1}^{L}
+\frac{
+\widehat{\ell}_i^{nm}
+-
+\gamma \widehat{\ell}_i^{m}
+}{
+\widehat{\ell}_i^{0}
+}.
+$$
 
-```text
-p(x_i | P + x_<i) ≈ softmax(cosine(real_word, sampled_word) / tau)
-```
+原因是 per-word ratio 不稳定，并且会破坏 log-likelihood 的 additive structure。因此这一版只在 text-level 做 normalization。
 
-这个 softmax 实际回答的是：
+#### Implementation
 
-```text
-在这些 sampled words 里面，哪个和真实词最像？
-```
+对每条 record，流程是：
 
-但 MIA 更需要回答的是：
+1. 读取 `label_results` 作为 target words。
+2. 读取三路 samples：`sample_results`、`nonmember_prefix_sample_results`、`member_prefix_sample_results`。
+3. 对每个 word 和每个 context type 计算 \(\widehat{p}_i^q\)。
+4. 计算 \(\widehat{\ell}_i^q=\log(\epsilon+\widehat{p}_i^q)\)。
+5. 聚合得到 \(\widehat{L}^{0}(x)\)、\(\widehat{L}^{nm}(x)\)、\(\widehat{L}^{m}(x)\)。
+6. 计算 \(S_{\mathrm{WPMIA}}(x)\)。
+7. 基于 score 计算 AUC 和 TPR@5%FPR。
 
-```text
-模型在这个上下文下，到底有多倾向真实词或真实语义？
-```
+#### Hyperparameters
 
-这两个问题并不等价。比如真实词是 `Conference`，如果采样词是 `tournament`, `championship`, `league`，它们整体都比较相关，分数高是合理的。但如果采样词是 `banana`, `window`, `quietly`，所有词都和真实词很远，softmax 仍然会在这些差候选里强行选出一个“相对最好”的词，并给它较高权重。这样会掩盖“整体都不像真实词”这个重要信号。
+默认设置：
 
-所以这个 scoring 的主要问题是：
+* \(\tau=0.1\)
+* \(\epsilon=10^{-8}\)
+* \(\gamma=1.0\)
 
-```text
-softmax 只保留候选内部的相对差异，削弱了绝对语义接近程度。
-```
+可选 sweep：
 
-原始 SimMIA 的 score 反而更直接：
+$$
+\tau\in\{0.03,0.05,0.1,0.2,0.5\},
+$$
 
-```text
-score = sum frequency(sample_word) * similarity(real_word, sample_word)
-```
+$$
+\gamma\in\{0,0.25,0.5,0.75,1.0\}.
+$$
 
-它保留了“整体像不像”的绝对强度。如果所有 sampled words 都不像真实词，score 就自然低。
+#### Evaluation
 
-因此，如果要改进 word-level score，更合理的表述可能是 kernelized semantic density score，例如：
+主要汇报两个指标：
 
-```text
-S_i(P) = sum_j freq_j * exp(sim(real_word, sampled_word_j) / tau)
-```
+* AUC
+* TPR@5%FPR
 
-这个形式不强行把候选集合归一化成 1，而是保留“当前上下文下采样分布整体靠近真实词语义”的强弱。
+#### Ablation
 
-一句话总结：
+所有需要新的 `records.jsonl` 的 ablation 结果，都放在新的 log 文件夹下。本阶段只做以下 ablation。
 
-```text
-原方案的问题是把“候选词之间谁更像真实词”当成了“模型有多支持真实词”；但 MIA 需要的是后者。
-```
+1. SimMIA vs WPMIA
 
-因此，在当前阶段，member-prefix contrastive 更值得优先测试。它不是只重新包装同一批 similarity，而是引入了一个新的对照条件，可能产生真正新的判别信号。
+比较原始 SimMIA score 和新的 likelihood-based score。
+
+原始 SimMIA 使用 raw semantic similarity ratio。
+
+WPMIA 使用：
+
+$$
+S_{\mathrm{WPMIA}}(x)
+=
+\frac{
+\widehat{L}^{nm}(x)
+-
+\gamma \widehat{L}^{m}(x)
+}{
+\widehat{L}^{0}(x)
+}.
+$$
+
+2. Without member prefix vs With member prefix
+
+不使用 member prefix：
+
+$$
+S_{\mathrm{nm}}(x)
+=
+\frac{
+\widehat{L}^{nm}(x)
+}{
+\widehat{L}^{0}(x)
+}.
+$$
+
+使用 member prefix：
+
+$$
+S_{\mathrm{con}}(x)
+=
+\frac{
+\widehat{L}^{nm}(x)
+-
+\gamma \widehat{L}^{m}(x)
+}{
+\widehat{L}^{0}(x)
+}.
+$$
+
+3. Gamma sweep
+
+固定 \(\tau\)，改变：
+
+$$
+\gamma\in\{0,0.25,0.5,0.75,1.0\}.
+$$
+
+汇报 AUC 和 TPR@5%FPR。
+
+4. Tau sweep
+
+固定 \(\gamma\)，改变：
+
+$$
+\tau\in\{0.03,0.05,0.1,0.2,0.5\}.
+$$
+
+汇报 AUC 和 TPR@5%FPR。
+
+#### Current Scope
+
+本阶段只验证一个核心问题：
+
+> Can semantic-kernel pseudo log-likelihood and member/non-member prefix contrast improve SimMIA under the same black-box sampling cache?

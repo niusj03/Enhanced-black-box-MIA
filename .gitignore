@@ -218,5 +218,6 @@ __marimo__/
 # SimMIA experiment outputs
 simmia_out/
 samia_out/
+ablation/
 
 /.vscode

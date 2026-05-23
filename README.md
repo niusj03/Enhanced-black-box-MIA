@@ -121,6 +121,7 @@ Key Argument Explanations:
 - `--sampling`: the way to sample continuations from LLMs. You can perform either word-by-word sampling like SimMIA or complete continuation from a fixed-length prefix like SaMIA.
 - `--postprocess`: some necessary data preparation, especially for SimMIA.
 - `--inference`: which method is used to compute the membership score.
+- `--wpmia_tau` / `--wpmia_gamma`: WPMIA sensitivity-study parameters used by `process_wpmia_word_data` and `wpmia_score`.
 
 > [!NOTE]
 > If you want to switch to SaMIA:
@@ -161,6 +162,10 @@ bash scripts/run_simmia_hard.sh <MODEL NAME OR PATH> <DATA> <SUB_DATASET> [GPU_I
 
 # SimMIA
 bash scripts/run_simmia_soft.sh <MODEL NAME OR PATH> <DATA> <SUB_DATASET> [GPU_IDS] [CONCURRENCY]
+
+# WPMIA, reusing the new-format three-way records.jsonl cache when present
+WPMIA_TAU=0.1 WPMIA_GAMMA=1.0 \
+bash scripts/run_wpmia.sh <MODEL NAME OR PATH> <DATA> <SUB_DATASET> [GPU_IDS] [CONCURRENCY]
 ```
 
 Valid `SUB_DATASET` values for different `DATA`:
@@ -171,43 +176,163 @@ Valid `SUB_DATASET` values for different `DATA`:
 > [!NOTE]
 > For SimMIA with `dm_mathematics` in MIMIR, the `--exact_match_number` flag is automatically enabled to use exact numeric matching instead of word similarity for numerical values.
 
-Run the following bash commmands to store the cache for sampling records.
+WPMIA uses the cached `sample_results`, `nonmember_prefix_sample_results`, and `member_prefix_sample_results` in `records.jsonl`; when that cache is already complete, running WPMIA only reruns embedding postprocess and inference. The default score uses `--wpmia_tau 0.1` and `--wpmia_gamma 1.0`.
+
+```bash
+# Single WPMIA run
+WPMIA_TAU=0.1 WPMIA_GAMMA=1.0 \
+bash scripts/run_wpmia.sh EleutherAI/pythia-6.9b SimMIA/WikiMIA-25 paper_subset "0 1 2 3 4 5 6 7"
+
+# Include WPMIA in the paper cache queue after hard/soft scoring
+METHODS="hard soft wpmia" \
+bash scripts/run_paper_simmia_cache_queue.sh "0 1 2 3 4 5 6 7"
+
+# Tau/gamma sensitivity sweep
+for tau in 0.03 0.05 0.1 0.2 0.5; do
+  for gamma in 0 0.25 0.5 0.75 1.0; do
+    WPMIA_TAU="$tau" WPMIA_GAMMA="$gamma" \
+    bash scripts/run_wpmia.sh EleutherAI/pythia-6.9b SimMIA/WikiMIA-25 paper_subset "0 1 2 3 4 5 6 7"
+  done
+done
 ```
+
+Run the following bash commands to store the cache for sampling records.
+
+```bash
 # RUN the MIMIR
 RUN_WIKIMIA=0 RUN_MIMIR=1 RUN_WIKIMIA25=0 RUN_API=0 \
 MIMIR_MODELS="EleutherAI/pythia-160m EleutherAI/pythia-1.4b EleutherAI/pythia-2.8b EleutherAI/pythia-6.9b" \
 MIMIR_SUBSETS="wikipedia_(en) github pile_cc pubmed_central arxiv dm_mathematics hackernews" \
 nohup bash scripts/run_paper_simmia_cache_queue.sh \
   "0 1 2 3 4 5 6 7" "" \
-  --prefix_len 50 \
   --params sampling_batch_size:100 \
-  > logs/simmia_cache_queue.mimir_wikimia25_prefix50_bs100.nohup.log 2>&1 &
+  > logs/simmia_cache_queue.mimir_bs100.nohup.log 2>&1 &
 
-% RUN the WikiMIA-25
+# RUN the WikiMIA-25
 RUN_WIKIMIA=0 RUN_MIMIR=0 RUN_WIKIMIA25=1 RUN_API=0 \
 WIKIMIA25_MODELS="EleutherAI/pythia-6.9b Qwen/Qwen3-8B-Base" \
 WIKIMIA25_SUBSETS="paper_subset" \
 nohup bash scripts/run_paper_simmia_cache_queue.sh \
   "0 1 2 3 4 5 6 7" "" \
   --params sampling_batch_size:100 \
-  > logs/simmia_cache_queue.wikimia25_pythia69b_qwen3_8b_bs100.nohup.log 2>&1 &
+  > logs/simmia_cache_queue.wikimia25_bs100.nohup.log 2>&1 &
 
-
+# RUN the WikiMIA on GPT-NeoX
+# When running LENGTHS=128, change 'sampling_batch_size' to 1
 RUN_WIKIMIA=1 RUN_MIMIR=0 RUN_WIKIMIA25=0 \
 WIKIMIA_MODELS="EleutherAI/gpt-neox-20b" \
 WIKIMIA_LENGTHS="32 64" \
 nohup bash scripts/run_paper_simmia_cache_queue.sh \
   "0 1 2 3 4 5 6 7" "" \
   --params sampling_batch_size:2 \
-  > logs/simmia_cache_queue.gptneox20b_wikimia_32_64_bs2.nohup.log 2>&1 &
+  > logs/simmia_cache_queue.wikimia.nohup.log 2>&1 &
 
-RUN_WIKIMIA=1 RUN_MIMIR=0 RUN_WIKIMIA25=0 \
-WIKIMIA_MODELS="EleutherAI/gpt-neox-20b" \
-WIKIMIA_LENGTHS="128" \
-nohup bash scripts/run_paper_simmia_cache_queue.sh \
-  "0 1 2 3 4 5 6 7" "" \
-  --params sampling_batch_size:1 \
-  > logs/simmia_cache_queue.gptneox20b_wikimia_128_bs1.nohup.log 2>&1 &
+```
+
+### Generic ablation runs under `Ablation/`
+
+Use `--output_dir Ablation` for ablation experiments. The output path is derived from the dataset, subset, model name, and `--num_shots`; for example, WikiMIA length-32 on Pythia-6.9B with `--num_shots 7` writes to `Ablation/WikiMIA/WikiMIA_length32/pythia-6.9b/7/`.
+
+The reusable pattern is: keep a common configuration, then append only the argument(s) you want to ablate. `--result_name` only changes the ROC filename, while `records.jsonl` stores the sampling cache. If you change sampling-affecting arguments that are not encoded in the output path, such as `--top_k`, `--num_samples`, or `--prefix_len`, use a different `OUT` value under `Ablation/` or pass `--overwrite` intentionally. WPMIA uses the same new-format `records.jsonl` cache, but swaps in `process_wpmia_word_data` and `wpmia_score`.
+
+```bash
+mkdir -p logs/ablation
+
+nohup bash -c '
+set -euo pipefail
+
+GPU_IDS="0 1 2 3 4 5 6 7"
+MODEL="EleutherAI/pythia-6.9b"
+DATA="swj0419/WikiMIA"
+SUB_DATASET="WikiMIA_length32"
+OUT="Ablation"
+SIMMIA_BIN="${SIMMIA_BIN:-simmia.benchmark}"
+
+COMMON_ARGS=(
+  --gpu_ids $GPU_IDS
+  --model_name_or_path "$MODEL"
+  --sampling relative_word_by_word
+  --output_dir "$OUT"
+  --num_samples 100
+  --data "$DATA"
+  --sub_dataset "$SUB_DATASET"
+  --top_k 20
+)
+
+run_soft() {
+  local result_name="$1"
+  shift
+  "$SIMMIA_BIN" "${COMMON_ARGS[@]}" \
+    --postprocess process_relative_word_data \
+    --inference relative_semantic_ratio \
+    --result_name "$result_name" \
+    "$@"
+}
+
+run_hard() {
+  local result_name="$1"
+  shift
+  "$SIMMIA_BIN" "${COMMON_ARGS[@]}" \
+    --postprocess process_relative_word_data \
+    --inference relative_label_ratio \
+    --result_name "$result_name" \
+    --smoothing \
+    "$@"
+}
+
+run_wpmia() {
+  local result_name="$1"
+  local tau="$2"
+  local gamma="$3"
+  shift 3
+  "$SIMMIA_BIN" "${COMMON_ARGS[@]}" \
+    --postprocess process_wpmia_word_data \
+    --inference wpmia_score \
+    --result_name "$result_name" \
+    --wpmia_tau "$tau" \
+    --wpmia_gamma "$gamma" \
+    "$@"
+}
+
+# Example 1: one custom soft SimMIA run under Ablation/.
+run_soft "my_ablation" --num_shots 7 --prefix_ratio 0.0
+
+# Example 2: sweep #shots for soft SimMIA and SimMIA*.
+for shots in $(seq 1 10); do
+  run_soft "shots_${shots}" --num_shots "$shots" --prefix_ratio 0.0
+  run_hard "shots_${shots}_hard" --num_shots "$shots" --prefix_ratio 0.0
+done
+
+# Example 3: one WPMIA run using the same three-way records.jsonl cache.
+run_wpmia "wpmia_tau_0p1_gamma_1p0" 0.1 1.0 --num_shots 7 --prefix_ratio 0.0
+
+# Example 4: sweep WPMIA tau/gamma. This only reruns postprocess and inference
+# when the records.jsonl cache for the same num_shots is already complete.
+for tau in 0.03 0.05 0.1 0.2 0.5; do
+  for gamma in 0 0.25 0.5 0.75 1.0; do
+    run_wpmia "wpmia_tau_${tau//./p}_gamma_${gamma//./p}" \
+      "$tau" "$gamma" --num_shots 7 --prefix_ratio 0.0
+  done
+done
+
+# Example 5: sweep prefix_ratio for soft SimMIA with fixed num_shots=7.
+# prefix_ratio only changes inference scoring positions, so it reuses records.jsonl.
+for ratio in 0.1 0.3 0.5 0.7 0.9; do
+  run_soft "prefix_ratio_${ratio//./p}" --num_shots 7 --prefix_ratio "$ratio"
+done
+' > logs/ablation/wikimia32_pythia69b_ablation.nohup.log 2>&1 &
+```
+
+If `simmia.benchmark` is not on your non-interactive shell `PATH`, set `SIMMIA_BIN` before launching the queue:
+
+```bash
+export SIMMIA_BIN=/path/to/your/conda/env/bin/simmia.benchmark
+```
+
+Track progress with:
+
+```bash
+tail -f logs/ablation/wikimia32_pythia69b_ablation.nohup.log
 ```
 
 To reproduce the results of most **gray-box** MIAs (e.g., Loss/Reference/Zlib/Neighborhood/Min-K%/Min-K%++/ReCaLL) reported in the paper, please refer to the official **[MIMIR](https://github.com/iamgroot42/mimir)** repo.

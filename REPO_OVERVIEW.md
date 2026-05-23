@@ -88,6 +88,47 @@ API 模型可以用 `--concurrency` 控制并发请求数量。
 
 它不使用 embedding 语义相似度，而是看真实词本身在采样结果里出现的频率。`--smoothing` 会做简单平滑，减少真实词没有出现时的极端情况。
 
+### `scripts/run_wpmia.sh`
+
+这是 Step2 的 WPMIA 打分入口。它不引入新的 target LLM sampling，而是复用新格式 `records.jsonl` 中已经缓存好的三路结果：
+
+```text
+sample_results
+nonmember_prefix_sample_results
+member_prefix_sample_results
+```
+
+它使用：
+
+```bash
+--postprocess process_wpmia_word_data
+--inference wpmia_score
+```
+
+`process_wpmia_word_data` 会计算三路 semantic-kernel pseudo log-likelihood：`wpmia_L0`、`wpmia_Lnm`、`wpmia_Lm`。`wpmia_score` 再计算：
+
+```text
+score = (wpmia_Lnm - wpmia_gamma * wpmia_Lm) / wpmia_L0
+```
+
+常用单次运行：
+
+```bash
+WPMIA_TAU=0.1 WPMIA_GAMMA=1.0 \
+bash scripts/run_wpmia.sh EleutherAI/pythia-6.9b SimMIA/WikiMIA-25 paper_subset "0 1 2 3 4 5 6 7"
+```
+
+做 sensitivity study 时可以扫：
+
+```bash
+for tau in 0.03 0.05 0.1 0.2 0.5; do
+  for gamma in 0 0.25 0.5 0.75 1.0; do
+    WPMIA_TAU="$tau" WPMIA_GAMMA="$gamma" \
+    bash scripts/run_wpmia.sh EleutherAI/pythia-6.9b SimMIA/WikiMIA-25 paper_subset "0 1 2 3 4 5 6 7"
+  done
+done
+```
+
 ### `scripts/run_samia.sh`
 
 这是 SaMIA baseline。
@@ -373,6 +414,10 @@ member_prefix_sample_results        # fixed member prefix 下的 word-level 采�
 
 SimMIA* hard 版本的最终评估图。`scripts/run_simmia_soft.sh` 和 `scripts/run_simmia_hard.sh` 共用同一个 `records.jsonl`，但通过 `--result_name` 输出不同文件名，所以可以在同一个文件夹下同时保留两张图。
 
+`wpmia_tau_0.1_gamma_1.0_roc_tpr_at_5_fpr.png`
+
+WPMIA 的默认输出图。`scripts/run_wpmia.sh` 默认会把 `WPMIA_TAU` 和 `WPMIA_GAMMA` 写进 `result_name`，所以 tau/gamma sweep 不会互相覆盖 ROC 图。
+
 `roc_tpr_at_5_fpr.png`
 
 兼容旧命令的默认评估图。如果直接调用 `simmia.benchmark` 且不传 `--result_name`，仍会生成这个文件。
@@ -418,6 +463,7 @@ membership score 的计算方法：
 ```text
 relative_semantic_ratio   # 正式 SimMIA soft 版本
 relative_label_ratio      # SimMIA* hard 版本
+wpmia_score               # Step2 WPMIA semantic-kernel likelihood 版本
 rouge_n                   # SaMIA baseline
 ```
 
@@ -457,13 +503,21 @@ hard SimMIA 常用，对真实词频做平滑。
 
 控制 ROC 图文件名。比如 `--result_name simmia` 会输出 `simmia_roc_tpr_at_5_fpr.png`；`--result_name simmia_hard` 会输出 `simmia_hard_roc_tpr_at_5_fpr.png`。如果不传这个参数，就保持旧文件名 `roc_tpr_at_5_fpr.png`。
 
+`--wpmia_tau`
+
+WPMIA semantic kernel 的 temperature，默认 `0.1`，要求大于 0。
+
+`--wpmia_gamma`
+
+WPMIA 中 member-prefix likelihood 的权重，默认 `1.0`，要求大于等于 0。
+
 `--overwrite`
 
 是否覆盖已有缓存。这个仓库会复用 `records.jsonl`、`full_dataset.jsonl`、`prefix_data.json` 等缓存；如果改了关键参数但想重新跑，建议加 `--overwrite`。
 
 ## 给合作者的快速判断
 
-如果想复现实验，优先看 `scripts/` 下面三个 bash。
+如果想复现实验，优先看 `scripts/` 下面几个 wrapper bash。
 
 如果想理解 SimMIA 方法本身，优先看：
 

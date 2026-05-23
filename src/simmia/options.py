@@ -8,6 +8,20 @@ from simmia._internal import (
 )
 
 
+def _positive_float(value: str) -> float:
+    value = float(value)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("value must be > 0")
+    return value
+
+
+def _nonnegative_float(value: str) -> float:
+    value = float(value)
+    if value < 0:
+        raise argparse.ArgumentTypeError("value must be >= 0")
+    return value
+
+
 def add_arguments(parser: argparse.ArgumentParser):
     # Basic
     parser.add_argument(
@@ -125,6 +139,18 @@ def add_arguments(parser: argparse.ArgumentParser):
         default="relative_semantic_ratio",
         choices=INFERENCE_METHODS.list_keys(),
         help="the function name to infer the membership for each test instance",
+    )
+    parser.add_argument(
+        "--wpmia_tau",
+        type=_positive_float,
+        default=0.1,
+        help="temperature for WPMIA semantic-kernel likelihood scoring",
+    )
+    parser.add_argument(
+        "--wpmia_gamma",
+        type=_nonnegative_float,
+        default=1.0,
+        help="member-prefix contrast weight for WPMIA scoring",
     )
 
     # Additional
