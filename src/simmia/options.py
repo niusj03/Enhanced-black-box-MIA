@@ -22,6 +22,13 @@ def _nonnegative_float(value: str) -> float:
     return value
 
 
+def _positive_int(value: str) -> int:
+    value = int(value)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("value must be > 0")
+    return value
+
+
 def add_arguments(parser: argparse.ArgumentParser):
     # Basic
     parser.add_argument(
@@ -107,6 +114,16 @@ def add_arguments(parser: argparse.ArgumentParser):
         default=100,
         help="the number of samples of sampling generation",
     )
+    parser.add_argument(
+        "--sample_count_limit",
+        type=_positive_int,
+        default=None,
+        help=(
+            "optional cap on cached sampled continuations consumed during "
+            "word-level postprocess; useful for sample-count ablations without "
+            "regenerating records.jsonl"
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42, help="the random seed")
 
     # Postprocess
@@ -143,7 +160,7 @@ def add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--wpmia_tau",
         type=_positive_float,
-        default=0.1,
+        default=0.2,
         help="temperature for WPMIA semantic-kernel likelihood scoring",
     )
     parser.add_argument(

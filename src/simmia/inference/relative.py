@@ -17,16 +17,19 @@ def relative_label_ratio(
     predictions = []
     answers = []
     for rec in tqdm(records, desc=f"Inferring with [{relative_label_ratio.__name__}]"):
+        start_idx = get_start_idx(len(rec["label_results"]), args.prefix_ratio)
         orig = np.array(
-            [x if x is not None else 10e-3 for x in rec["label_freq_target"]][
-                : args.num_samples
-            ],
+            [
+                x if x is not None else 10e-3
+                for x in rec["label_freq_target"][start_idx:]
+            ][: args.num_samples],
             dtype=float,
         )
         prep = np.array(
-            [x if x is not None else 0.0 for x in rec["prefix_label_freq_target"]][
-                : args.num_samples
-            ],
+            [
+                x if x is not None else 0.0
+                for x in rec["prefix_label_freq_target"][start_idx:]
+            ][: args.num_samples],
             dtype=float,
         )
         ratio = np.nan_to_num(prep / (orig))

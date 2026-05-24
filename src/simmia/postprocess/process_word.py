@@ -4,7 +4,7 @@ import math
 import re
 import numpy as np
 
-from typing import Tuple, List, Any
+from typing import Tuple, List, Any, Optional
 from collections import Counter
 
 from simmia._internal import POSTPROCESS_METHODS
@@ -14,6 +14,7 @@ from simmia.utils import extract_first_word, get_start_idx
 __all__ = [
     "process_word_data",
     "process_relative_word_data",
+    "process_relative_label_word_data",
     "process_wpmia_word_data",
 ]
 
@@ -52,6 +53,7 @@ def _process_word_data(
     embedding_model: sentence_transformers.SentenceTransformer,
     smoothing: bool,
     exact_match_number: bool,
+    sample_count_limit: Optional[int] = None,
 ) -> Tuple[
     List[List[float]],
     List[List[float]],
@@ -63,10 +65,9 @@ def _process_word_data(
 
     for label_token, sample_token_count in zip(label_results, sample_results):
         label_word = extract_first_word(label_token)
-        sample_word_counter = Counter()
-        for token, count in sample_token_count:
-            word = extract_first_word(token)
-            sample_word_counter.update({word: count})
+        sample_word_counter = _counter_first_words(
+            sample_token_count, sample_count_limit=sample_count_limit
+        )
 
         approx_label_word = None
         if label_word not in sample_word_counter:
@@ -119,15 +120,71 @@ def _process_word_data(
     return sample_similarity, sample_frequencies, label_frequencies
 
 
+def _process_label_word_data(
+    label_results: List[str],
+    sample_results: List[List[Tuple[str, int]]],
+    smoothing: bool,
+    sample_count_limit: Optional[int] = None,
+) -> List[float]:
+    label_frequencies = []
+
+    for label_token, sample_token_count in zip(label_results, sample_results):
+        label_word = extract_first_word(label_token)
+        sample_word_counter = _counter_first_words(
+            sample_token_count, sample_count_limit=sample_count_limit
+        )
+
+        approx_label_word = None
+        if label_word not in sample_word_counter:
+            for word in sample_word_counter.keys():
+                if word.lower().startswith(
+                    label_word.lower()
+                ) or label_word.lower().startswith(word.lower()):
+                    approx_label_word = word
+                    break
+
+        if smoothing:
+            for word in list(sample_word_counter.keys()):
+                sample_word_counter.update({word: 1})
+            if approx_label_word is None:
+                sample_word_counter.update({label_word: 1})
+
+        label_key = label_word if approx_label_word is None else approx_label_word
+        label_frequencies.append(
+            sample_word_counter[label_key] / sum(sample_word_counter.values())
+        )
+
+    return label_frequencies
+
+
 def _to_float_array(values: Any) -> np.ndarray:
     if hasattr(values, "detach"):
         values = values.detach().cpu().numpy()
     return np.asarray(values, dtype=float)
 
 
-def _counter_first_words(sample_token_count: List[Tuple[str, int]]) -> Counter:
+def _sample_count_limit_from_args(args: argparse.Namespace) -> Optional[int]:
+    sample_count_limit = getattr(args, "sample_count_limit", None)
+    if sample_count_limit is None:
+        return None
+    sample_count_limit = int(sample_count_limit)
+    if sample_count_limit <= 0:
+        raise ValueError("--sample_count_limit must be > 0 when provided")
+    return sample_count_limit
+
+
+def _counter_first_words(
+    sample_token_count: List[Tuple[str, int]],
+    sample_count_limit: Optional[int] = None,
+) -> Counter:
     sample_word_counter = Counter()
+    remaining = sample_count_limit
     for token, count in sample_token_count:
+        if remaining is not None:
+            if remaining <= 0:
+                break
+            count = min(int(count), remaining)
+            remaining -= count
         word = extract_first_word(token)
         sample_word_counter.update({word: count})
     return sample_word_counter
@@ -155,6 +212,7 @@ def _wpmia_record_log_likelihoods(
     tau: float,
     exact_match_number: bool,
     start_idx: int,
+    sample_count_limit: Optional[int] = None,
     epsilon: float = 1e-8,
 ) -> Tuple[float, float, float]:
     prepared = []
@@ -168,7 +226,10 @@ def _wpmia_record_log_likelihoods(
         label_word = extract_first_word(label_token)
         _remember_word(label_word, unique_words, seen_words)
 
-        counters = [_counter_first_words(samples) for samples in route_samples]
+        counters = [
+            _counter_first_words(samples, sample_count_limit=sample_count_limit)
+            for samples in route_samples
+        ]
         for counter in counters:
             for word in counter.keys():
                 _remember_word(word, unique_words, seen_words)
@@ -221,6 +282,7 @@ def process_word_data(
         embedding_model=embedder,
         smoothing=args.smoothing,
         exact_match_number=args.exact_match_number,
+        sample_count_limit=_sample_count_limit_from_args(args),
     )
 
     instance.update(
@@ -246,6 +308,7 @@ def process_relative_word_data(
         embedding_model=embedder,
         smoothing=args.smoothing,
         exact_match_number=args.exact_match_number,
+        sample_count_limit=_sample_count_limit_from_args(args),
     )
     prefix_sample_similarity, prefix_sample_frequencies, prefix_label_frequencies = (
         _process_word_data(
@@ -254,6 +317,7 @@ def process_relative_word_data(
             embedding_model=embedder,
             smoothing=args.smoothing,
             exact_match_number=args.exact_match_number,
+            sample_count_limit=_sample_count_limit_from_args(args),
         )
     )
 
@@ -264,6 +328,35 @@ def process_relative_word_data(
             "label_freq_target": label_frequencies,
             "prefix_sem_target": prefix_sample_similarity,
             "prefix_freq_target": prefix_sample_frequencies,
+            "prefix_label_freq_target": prefix_label_frequencies,
+        }
+    )
+    return instance
+
+
+@POSTPROCESS_METHODS.register("process_relative_label_word_data")
+def process_relative_label_word_data(
+    rank: int,
+    args: argparse.Namespace,
+    embedder: Any,
+    instance: dict,
+) -> dict:
+    label_frequencies = _process_label_word_data(
+        label_results=instance["label_results"],
+        sample_results=instance["sample_results"],
+        smoothing=args.smoothing,
+        sample_count_limit=_sample_count_limit_from_args(args),
+    )
+    prefix_label_frequencies = _process_label_word_data(
+        label_results=instance["label_results"],
+        sample_results=instance["nonmember_prefix_sample_results"],
+        smoothing=args.smoothing,
+        sample_count_limit=_sample_count_limit_from_args(args),
+    )
+
+    instance.update(
+        {
+            "label_freq_target": label_frequencies,
             "prefix_label_freq_target": prefix_label_frequencies,
         }
     )
@@ -303,6 +396,7 @@ def process_wpmia_word_data(
         tau=args.wpmia_tau,
         exact_match_number=args.exact_match_number,
         start_idx=start_idx,
+        sample_count_limit=_sample_count_limit_from_args(args),
     )
 
     instance.update(

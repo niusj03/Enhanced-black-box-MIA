@@ -19,6 +19,7 @@ setup(
         "matplotlib>=3.7.0",
         "scikit-learn>=1.3.0",
         "nltk>=3.8.0",
+        "gensim>=4.3.0",
         "tqdm>=4.65.0",
         "torch>=2.0.0",
         "accelerate>=0.20.0",

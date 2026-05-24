@@ -42,6 +42,10 @@ def fix_seed(seed: int = 0):
     set_seed(seed)
 
 
+def get_noop_postprocess_state(rank: int, args: argparse.Namespace):
+    return None
+
+
 def cli_main():
     multiprocessing.set_start_method("spawn")
 
@@ -109,9 +113,14 @@ def cli_main():
     if args.postprocess is not None:
         jobs = records
         records = []
+        postprocess_init_fn = (
+            get_noop_postprocess_state
+            if args.postprocess in {"process_relative_label_word_data"}
+            else get_embedder
+        )
         with JobScheduler(
             args=args,
-            job_init_fn=get_embedder,
+            job_init_fn=postprocess_init_fn,
             job_exec_fn=POSTPROCESS_METHODS[args.postprocess],
             devices=args.gpu_ids,
         ) as scheduler:
