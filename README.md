@@ -187,6 +187,24 @@ bash scripts/run_wpmia.sh EleutherAI/pythia-6.9b SimMIA/WikiMIA-25 paper_subset 
 METHODS="hard soft wpmia" \
 bash scripts/run_paper_simmia_cache_queue.sh "0 1 2 3 4 5 6 7"
 
+# Sweep WikiMIA length 32/64/128 on the four paper models and write one CSV per model
+nohup bash scripts/run_wpmia_wikimia_cache_sweep.sh "0 1 2 3 4 5 6 7" \
+  > logs/wpmia/wikimia_wpmia_sweep.nohup.log 2>&1 &
+
+# CSV outputs:
+#   logs/wpmia/wikimia_pythia_wpmia_sweep.csv
+#   logs/wpmia/wikimia_opt67b_wpmia_sweep.csv
+#   logs/wpmia/wikimia_llama13b_wpmia_sweep.csv
+#   logs/wpmia/wikimia_gptneox20b_wpmia_sweep.csv
+
+# Sweep every complete MIMIR cache already under simmia_out/mimir
+nohup bash scripts/run_wpmia_mimir_cache_sweep.sh "0 1 2 3 4 5 6 7" \
+  > logs/wpmia/mimir_wpmia_sweep.nohup.log 2>&1 &
+
+# Sweep every complete WikiMIA-25 cache already under simmia_out/WikiMIA-25
+nohup bash scripts/run_wpmia_wikimia25_cache_sweep.sh "0 1 2 3 4 5 6 7" \
+  > logs/wpmia/wikimia25_wpmia_sweep.nohup.log 2>&1 &
+
 # Tau/gamma sensitivity sweep
 for tau in 0.03 0.05 0.1 0.2 0.5; do
   for gamma in 0 0.25 0.5 0.75 1.0; do

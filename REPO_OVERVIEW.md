@@ -129,6 +129,44 @@ for tau in 0.03 0.05 0.1 0.2 0.5; do
 done
 ```
 
+如果要一次性跑 WikiMIA length 32/64/128 on 四个 paper 模型，并把每组 tau/gamma 的 AUC、TPR 分别汇总成四个 CSV，用：
+
+```bash
+nohup bash scripts/run_wpmia_wikimia_cache_sweep.sh "0 1 2 3 4 5 6 7" \
+  > logs/wpmia/wikimia_wpmia_sweep.nohup.log 2>&1 &
+```
+
+默认 CSV 写到：
+
+```text
+logs/wpmia/wikimia_pythia_wpmia_sweep.csv
+logs/wpmia/wikimia_opt67b_wpmia_sweep.csv
+logs/wpmia/wikimia_llama13b_wpmia_sweep.csv
+logs/wpmia/wikimia_gptneox20b_wpmia_sweep.csv
+```
+
+如果要对当前 `simmia_out/mimir` 下所有完整的新格式 cache 跑同一组 tau/gamma，并按 MIMIR split/model 汇总 CSV，用：
+
+```bash
+nohup bash scripts/run_wpmia_mimir_cache_sweep.sh "0 1 2 3 4 5 6 7" \
+  > logs/wpmia/mimir_wpmia_sweep.nohup.log 2>&1 &
+```
+
+如果要对当前 `simmia_out/WikiMIA-25` 下所有完整的新格式 cache 跑同一组 tau/gamma，并按 model 汇总 CSV，用：
+
+```bash
+nohup bash scripts/run_wpmia_wikimia25_cache_sweep.sh "0 1 2 3 4 5 6 7" \
+  > logs/wpmia/wikimia25_wpmia_sweep.nohup.log 2>&1 &
+```
+
+这两个脚本互相独立，可以同时后台运行。默认会生成类似这些 CSV：
+
+```text
+logs/wpmia/mimir_ngram_7_0.2_pythia-160m_wpmia_sweep.csv
+logs/wpmia/wikimia25_pythia-6.9b_wpmia_sweep.csv
+logs/wpmia/wikimia25_Qwen3-8B-Base_wpmia_sweep.csv
+```
+
 ### `scripts/run_samia.sh`
 
 这是 SaMIA baseline。
