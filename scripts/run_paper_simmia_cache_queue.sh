@@ -70,7 +70,7 @@ MIMIR_MODELS="${MIMIR_MODELS:-EleutherAI/pythia-160m EleutherAI/pythia-1.4b Eleu
 
 # Table 3: WikiMIA-25. API models are opt-in via RUN_API=1.
 WIKIMIA25_SUBSETS="${WIKIMIA25_SUBSETS:-paper_subset}"
-WIKIMIA25_MODELS="${WIKIMIA25_MODELS:-EleutherAI/pythia-6.9b Qwen/Qwen3-8B-Base}"
+WIKIMIA25_MODELS="${WIKIMIA25_MODELS-EleutherAI/pythia-6.9b Qwen/Qwen3-8B-Base}"
 API_WIKIMIA25_MODELS="${API_WIKIMIA25_MODELS:-api:google/gemini-2.5-flash}"
 
 RUN_ROOT="${RUN_ROOT:-logs/simmia_cache_queue/$(date +%Y%m%d_%H%M%S)}"
