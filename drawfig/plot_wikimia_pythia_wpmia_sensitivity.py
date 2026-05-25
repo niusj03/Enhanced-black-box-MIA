@@ -44,6 +44,7 @@ PLOTS = {
         "fixed": "gamma",
         "fixed_value": 1.0,
         "output": "wikimia_pythia_wpmia_tau_sensitivity_auc.png",
+        "xlabel": r"temperature parameter ($\tau$)",
         "xticks": [0.03, 0.05, 0.1, 0.2, 0.5],
     },
     "gamma": {
@@ -51,6 +52,7 @@ PLOTS = {
         "fixed": "tau",
         "fixed_value": 0.2,
         "output": "wikimia_pythia_wpmia_gamma_sensitivity_auc.png",
+        "xlabel": r"contrast strength parameter ($\gamma$)",
         "xticks": [0.0, 0.25, 0.5, 0.75, 1.0],
     },
 }
@@ -150,6 +152,7 @@ def plot_sensitivity(
 
     ax.set_xticks(x_positions)
     ax.set_xticklabels([format_value_label(x) for x in x_values])
+    ax.set_xlabel(config["xlabel"], fontweight="bold", labelpad=10)
     ax.set_ylabel("AUC", fontweight="bold", labelpad=4)
     ax.set_ylim(*padded_ylim(all_auc))
 
@@ -180,7 +183,7 @@ def plot_sensitivity(
     for text in legend.get_texts():
         text.set_color("black")
 
-    fig.subplots_adjust(left=0.12, right=0.985, bottom=0.13, top=0.96)
+    fig.subplots_adjust(left=0.12, right=0.985, bottom=0.22, top=0.96)
 
     saved_paths: list[Path] = []
     stem = Path(config["output"]).with_suffix("")
