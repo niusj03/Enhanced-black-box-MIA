@@ -141,8 +141,9 @@ def job_fn_wrapper(
             break
 
         # Fix the random seed for each sample to ensure reproducibility in multiprocessing
-        if args.seed is not None:
-            transformers.set_seed(args.seed)
+        sampling_seed = getattr(args, "sampling_seed", args.seed)
+        if sampling_seed is not None:
+            transformers.set_seed(sampling_seed)
 
         try:
             result = job_exec_fn(rank, args, state, job)

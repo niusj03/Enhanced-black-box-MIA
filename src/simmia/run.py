@@ -4,6 +4,7 @@ import multiprocessing
 import logging
 import sys
 import json
+import csv
 
 import numpy as np
 import random
@@ -46,6 +47,17 @@ def get_noop_postprocess_state(rank: int, args: argparse.Namespace):
     return None
 
 
+def dump_scores(predictions, answers, score_dump_path: str) -> None:
+    path = Path(score_dump_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as fout:
+        writer = csv.writer(fout)
+        writer.writerow(["index", "label", "score"])
+        for idx, (score, label) in enumerate(zip(predictions, answers)):
+            writer.writerow([idx, int(label), float(score)])
+    logger.info(f"Saved membership scores to {path}")
+
+
 def cli_main():
     multiprocessing.set_start_method("spawn")
 
@@ -60,7 +72,12 @@ def cli_main():
             except:
                 args.__dict__[key.strip()] = value.strip()
 
-    fix_seed(args.seed)
+    prefix_seed = args.prefix_seed if args.prefix_seed is not None else args.seed
+    sampling_seed = args.sampling_seed if args.sampling_seed is not None else args.seed
+    args.prefix_seed = prefix_seed
+    args.sampling_seed = sampling_seed
+
+    fix_seed(prefix_seed)
 
     if "WikiMIA" in args.data:
         output_dir = f"{args.output_dir}/{os.path.split(args.data)[-1]}/{args.sub_dataset}/{os.path.split(args.model_name_or_path)[-1]}/{args.num_shots}"
@@ -82,6 +99,7 @@ def cli_main():
     )
 
     if len(records) < len(full_data):
+        fix_seed(sampling_seed)
         logger.info(f"Saving results to {Path(outpath).cwd() / outpath}")
         with open(outpath, "a", encoding="utf-8") as fin:
             # Run & write cache
@@ -132,6 +150,8 @@ def cli_main():
 
     # Evaluation
     predictions, answers = INFERENCE_METHODS[args.inference](args, records[:])
+    if args.score_dump_path is not None:
+        dump_scores(predictions, answers, args.score_dump_path)
 
     auc, acc, low1, low5, low10 = evaluate(
         predictions,

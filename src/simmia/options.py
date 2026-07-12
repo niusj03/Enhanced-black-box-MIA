@@ -125,6 +125,21 @@ def add_arguments(parser: argparse.ArgumentParser):
         ),
     )
     parser.add_argument("--seed", type=int, default=42, help="the random seed")
+    parser.add_argument(
+        "--prefix_seed",
+        type=int,
+        default=None,
+        help=(
+            "optional seed used only when constructing full_dataset.jsonl and "
+            "prefix_data.json; defaults to --seed"
+        ),
+    )
+    parser.add_argument(
+        "--sampling_seed",
+        type=int,
+        default=None,
+        help="optional seed used only for target-model sampling; defaults to --seed",
+    )
 
     # Postprocess
     parser.add_argument(
@@ -176,6 +191,12 @@ def add_arguments(parser: argparse.ArgumentParser):
         type=str,
         default=None,
         help="the additional hyperparameter setting, e.g., `decoding:greedy`",
+    )
+    parser.add_argument(
+        "--score_dump_path",
+        type=str,
+        default=None,
+        help="optional CSV path to save per-example membership scores",
     )
 
     return parser

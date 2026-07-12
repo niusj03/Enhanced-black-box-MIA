@@ -214,7 +214,7 @@ def _wpmia_record_log_likelihoods(
     start_idx: int,
     sample_count_limit: Optional[int] = None,
     epsilon: float = 1e-8,
-) -> Tuple[float, float, float]:
+) -> Tuple[Tuple[float, float, float], Tuple[List[float], List[float], List[float]]]:
     prepared = []
     unique_words = []
     seen_words = set()
@@ -236,13 +236,14 @@ def _wpmia_record_log_likelihoods(
         prepared.append((label_word, counters))
 
     if not prepared:
-        return 0.0, 0.0, 0.0
+        return (0.0, 0.0, 0.0), ([], [], [])
 
     embeddings = embedding_model.encode(unique_words, show_progress_bar=False)
     normalized_embeddings = _normalize_rows(embeddings)
     embedding_by_word = dict(zip(unique_words, normalized_embeddings))
 
     log_likelihoods = np.zeros(len(sample_results_by_route), dtype=float)
+    word_log_likelihoods = [[] for _route in sample_results_by_route]
     for label_word, counters in prepared:
         label_embedding = embedding_by_word[label_word]
         label_is_number = exact_match_number and is_number(label_word)
@@ -250,7 +251,9 @@ def _wpmia_record_log_likelihoods(
         for route_idx, counter in enumerate(counters):
             total = sum(counter.values())
             if total <= 0:
-                log_likelihoods[route_idx] += np.log(epsilon)
+                word_log_likelihood = float(np.log(epsilon))
+                word_log_likelihoods[route_idx].append(word_log_likelihood)
+                log_likelihoods[route_idx] += word_log_likelihood
                 continue
 
             probability = 0.0
@@ -264,9 +267,14 @@ def _wpmia_record_log_likelihoods(
                         np.dot(label_embedding, embedding_by_word[sample_word])
                     )
                 probability += (count / total) * np.exp((score - 1.0) / tau)
-            log_likelihoods[route_idx] += np.log(epsilon + probability)
+            word_log_likelihood = float(np.log(epsilon + probability))
+            word_log_likelihoods[route_idx].append(word_log_likelihood)
+            log_likelihoods[route_idx] += word_log_likelihood
 
-    return tuple(float(x) for x in log_likelihoods)
+    return (
+        tuple(float(x) for x in log_likelihoods),
+        tuple(list(x) for x in word_log_likelihoods),
+    )
 
 
 @POSTPROCESS_METHODS.register("process_word_data")
@@ -385,7 +393,11 @@ def process_wpmia_word_data(
         )
 
     start_idx = get_start_idx(len(instance["label_results"]), args.prefix_ratio)
-    wpmia_L0, wpmia_Lnm, wpmia_Lm = _wpmia_record_log_likelihoods(
+    (wpmia_L0, wpmia_Lnm, wpmia_Lm), (
+        wpmia_word_L0,
+        wpmia_word_Lnm,
+        wpmia_word_Lm,
+    ) = _wpmia_record_log_likelihoods(
         label_results=instance["label_results"],
         sample_results_by_route=[
             instance["sample_results"],
@@ -404,6 +416,9 @@ def process_wpmia_word_data(
             "wpmia_L0": wpmia_L0,
             "wpmia_Lnm": wpmia_Lnm,
             "wpmia_Lm": wpmia_Lm,
+            "wpmia_word_L0": wpmia_word_L0,
+            "wpmia_word_Lnm": wpmia_word_Lnm,
+            "wpmia_word_Lm": wpmia_word_Lm,
         }
     )
     return instance

@@ -10,6 +10,19 @@ from simmia._internal import INFERENCE_METHODS
 from simmia.utils import get_start_idx
 
 
+def _finite_scalar(value: float) -> float:
+    return float(np.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0))
+
+
+def _require_fields(record: dict, fields: List[str], inference_name: str) -> None:
+    missing = [field for field in fields if field not in record]
+    if missing:
+        raise KeyError(
+            f"{inference_name} requires records postprocessed with "
+            "process_wpmia_word_data. Missing: " + ", ".join(missing)
+        )
+
+
 @INFERENCE_METHODS.register("relative_label_ratio")
 def relative_label_ratio(
     args: argparse.Namespace, records: List[dict]
@@ -79,6 +92,41 @@ def relative_semantic_ratio(
     return predictions, answers
 
 
+@INFERENCE_METHODS.register("wpmia_ll_score")
+def wpmia_ll_score(
+    args: argparse.Namespace, records: List[dict]
+) -> Tuple[List[float], List[bool]]:
+    predictions = []
+    answers = []
+    required_fields = ["wpmia_L0"]
+
+    for rec in tqdm(records, desc=f"Inferring with [{wpmia_ll_score.__name__}]"):
+        _require_fields(rec, required_fields, wpmia_ll_score.__name__)
+        predictions.append(_finite_scalar(rec["wpmia_L0"]))
+        answers.append(rec["label"])
+
+    return predictions, answers
+
+
+@INFERENCE_METHODS.register("wpmia_nonmember_ratio_score")
+def wpmia_nonmember_ratio_score(
+    args: argparse.Namespace, records: List[dict]
+) -> Tuple[List[float], List[bool]]:
+    predictions = []
+    answers = []
+    required_fields = ["wpmia_L0", "wpmia_Lnm"]
+
+    for rec in tqdm(
+        records, desc=f"Inferring with [{wpmia_nonmember_ratio_score.__name__}]"
+    ):
+        _require_fields(rec, required_fields, wpmia_nonmember_ratio_score.__name__)
+        prediction = np.divide(rec["wpmia_Lnm"], rec["wpmia_L0"])
+        predictions.append(_finite_scalar(prediction))
+        answers.append(rec["label"])
+
+    return predictions, answers
+
+
 @INFERENCE_METHODS.register("wpmia_score")
 def wpmia_score(
     args: argparse.Namespace, records: List[dict]
@@ -88,17 +136,53 @@ def wpmia_score(
     required_fields = ["wpmia_L0", "wpmia_Lnm", "wpmia_Lm"]
 
     for rec in tqdm(records, desc=f"Inferring with [{wpmia_score.__name__}]"):
-        missing = [field for field in required_fields if field not in rec]
-        if missing:
-            raise KeyError(
-                "WPMIA inference requires records postprocessed with "
-                "process_wpmia_word_data. Missing: " + ", ".join(missing)
-            )
-
+        _require_fields(rec, required_fields, wpmia_score.__name__)
         numerator = rec["wpmia_Lnm"] - args.wpmia_gamma * rec["wpmia_Lm"]
         prediction = np.divide(numerator, rec["wpmia_L0"])
-        prediction = float(np.nan_to_num(prediction, nan=0.0, posinf=0.0, neginf=0.0))
-        predictions.append(prediction)
+        predictions.append(_finite_scalar(prediction))
+        answers.append(rec["label"])
+
+    return predictions, answers
+
+
+@INFERENCE_METHODS.register("wpmia_word_nonmember_ratio_score")
+def wpmia_word_nonmember_ratio_score(
+    args: argparse.Namespace, records: List[dict]
+) -> Tuple[List[float], List[bool]]:
+    predictions = []
+    answers = []
+    required_fields = ["wpmia_word_L0", "wpmia_word_Lnm"]
+
+    for rec in tqdm(
+        records,
+        desc=f"Inferring with [{wpmia_word_nonmember_ratio_score.__name__}]",
+    ):
+        _require_fields(rec, required_fields, wpmia_word_nonmember_ratio_score.__name__)
+        word_L0 = np.array(rec["wpmia_word_L0"], dtype=float)
+        word_Lnm = np.array(rec["wpmia_word_Lnm"], dtype=float)
+        prediction = np.sum(np.divide(word_Lnm, word_L0))
+        predictions.append(_finite_scalar(prediction))
+        answers.append(rec["label"])
+
+    return predictions, answers
+
+
+@INFERENCE_METHODS.register("wpmia_word_score")
+def wpmia_word_score(
+    args: argparse.Namespace, records: List[dict]
+) -> Tuple[List[float], List[bool]]:
+    predictions = []
+    answers = []
+    required_fields = ["wpmia_word_L0", "wpmia_word_Lnm", "wpmia_word_Lm"]
+
+    for rec in tqdm(records, desc=f"Inferring with [{wpmia_word_score.__name__}]"):
+        _require_fields(rec, required_fields, wpmia_word_score.__name__)
+        word_L0 = np.array(rec["wpmia_word_L0"], dtype=float)
+        word_Lnm = np.array(rec["wpmia_word_Lnm"], dtype=float)
+        word_Lm = np.array(rec["wpmia_word_Lm"], dtype=float)
+        numerator = word_Lnm - args.wpmia_gamma * word_Lm
+        prediction = np.sum(np.divide(numerator, word_L0))
+        predictions.append(_finite_scalar(prediction))
         answers.append(rec["label"])
 
     return predictions, answers
