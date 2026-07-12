@@ -44,7 +44,8 @@ ABLATIONS = {
         "output": "wikimia32_pythia69b_prefix_ratio_auc.png",
         "xticks": [0.1, 0.3, 0.5, 0.7, 0.9],
         "xformatter": lambda x, _pos: f"{x:.1f}",
-        "legend_loc": "lower left",
+        "legend_loc": "lower right",
+        "use_continuation_ratio": True,
     },
     "num_samples": {
         "output": "wikimia32_pythia69b_num_samples_auc.png",
@@ -118,6 +119,8 @@ def plot_ablation(
     for method in METHODS:
         csv_path = csv_root / f"{prefix}_{ablation}_{method['key']}.csv"
         points = load_points(csv_path)
+        if config.get("use_continuation_ratio"):
+            points = sorted((round(1.0 - x, 10), auc) for x, auc in points)
         xs = [x for x, _auc in points]
         aucs = [auc for _x, auc in points]
         all_auc.extend(aucs)
