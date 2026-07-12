@@ -5,7 +5,7 @@ set -euo pipefail
 # This reuses records.jsonl and does not intentionally rerun target-LLM sampling.
 #
 # Usage:
-#   nohup bash scripts/run_wpmia_wikimia25_cache_sweep.sh "0 1 2 3 4 5 6 7" \
+#   nohup bash scripts/run_wpmia_wikimia25_tau_gamma_sweep.sh "0 1 2 3 4 5 6 7" \
 #     > logs/wpmia/wikimia25_wpmia_sweep.nohup.log 2>&1 &
 #
 # Useful overrides:

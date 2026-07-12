@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # Sweep WPMIA tau/gamma over WikiMIA-25 API caches. This is a thin wrapper over
-# run_wpmia_wikimia25_cache_sweep.sh that maps api:openai/<model-id> to the
+# run_wpmia_wikimia25_tau_gamma_sweep.sh that maps api:openai/<model-id> to the
 # cache directory name used by simmia.run (the final path segment of the model).
 #
 # Usage:
 #   API_WIKIMIA25_MODELS="api:openai/claude-4-5-haiku api:openai/gemini-2.5-flash api:openai/gpt-5-chat-latest" \
-#   nohup bash scripts/run_wpmia_wikimia25_api_sweep.sh "0 1 2 3 4 5 6 7" 5 \
+#   nohup bash scripts/run_wpmia_wikimia25_api_tau_gamma_sweep.sh "0 1 2 3 4 5 6 7" 5 \
 #     > logs/wpmia/wikimia25_api_wpmia_sweep.nohup.log 2>&1 &
 #
 # Set PARALLEL=1 to launch one sweep process per model/subset.
@@ -63,7 +63,7 @@ run_one_cache() {
   CACHE_ROOT="$cache_root" \
   RUN_ROOT="$run_root" \
   CSV_ROOT="$CSV_ROOT" \
-  bash scripts/run_wpmia_wikimia25_cache_sweep.sh \
+  bash scripts/run_wpmia_wikimia25_tau_gamma_sweep.sh \
     "$GPU_IDS" "$CONCURRENCY" \
     "${EXTRA_ARGS[@]}" \
     > "$log_file" 2>&1

@@ -1,25 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Sweep WPMIA tau/gamma on WikiMIA lengths for a Pythia model, or run the
-# WikiMIA length-32 Pythia-6.9B ablations used by the WPMIA study.
+# Parameter ablations on WikiMIA length 32 for Pythia-6.9B.
+# Compares SimMIA*, SimMIA, and WPMIA across prefix ratio, cached sample count,
+# and number of shots.
 #
-# Default tau/gamma sweep:
-#   bash scripts/run_wpmia_wikimia_pythia_sweep.sh "0 1 2 3 4 5 6 7"
+# Usage:
+#   nohup bash scripts/run_wikimia_pythia_parameter_ablation.sh "0 1 2 3 4 5 6 7" \
+#     > logs/ablation/wikimia32_pythia69b_parameter_ablation.nohup.log 2>&1 &
 #
-# Ablation mode:
-#   MODE=ablation bash scripts/run_wpmia_wikimia_pythia_sweep.sh "0 1 2 3 4 5 6 7"
-#
-# Useful sweep overrides:
-#   WPMIA_MODEL="EleutherAI/pythia-6.9b"
-#   WIKIMIA_LENGTHS="32 64 128"
-#   WPMIA_TAUS="0.03 0.05 0.1 0.2 0.5"
-#   WPMIA_GAMMAS="0 0.25 0.5 0.75 1.0"
-#   CSV_PATH="logs/wpmia/wikimia_pythia_wpmia_sweep.csv"
-#   SAMPLING_BATCH_SIZE=25
-#   CONTINUE_ON_ERROR=1
-#
-# Useful ablation overrides:
+# Useful overrides:
+#   MODEL="EleutherAI/pythia-6.9b"
 #   ABLATION_ELEMENTS="prefix_ratio num_samples num_shots"
 #   ABLATION_METHODS="simmia_star simmia wpmia"
 #   PREFIX_RATIOS="0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9"
@@ -32,12 +23,8 @@ GPU_IDS="${1:-${GPU_IDS:-0 1 2 3 4 5 6 7}}"
 CONCURRENCY="${2:-${CONCURRENCY:-}}"
 EXTRA_ARGS=("${@:3}")
 
-MODE="${MODE:-wpmia_sweep}"
-MODEL="${WPMIA_MODEL:-EleutherAI/pythia-6.9b}"
-DATA="${WPMIA_DATA:-swj0419/WikiMIA}"
-LENGTHS="${WIKIMIA_LENGTHS:-32 64 128}"
-TAUS="${WPMIA_TAUS:-0.03 0.05 0.1 0.2 0.5}"
-GAMMAS="${WPMIA_GAMMAS:-0 0.25 0.5 0.75 1.0}"
+MODEL="${MODEL:-${WPMIA_MODEL:-EleutherAI/pythia-6.9b}}"
+DATA="${DATA:-${WPMIA_DATA:-swj0419/WikiMIA}}"
 NUM_SHOTS="${NUM_SHOTS:-7}"
 CACHE_NUM_SAMPLES="${CACHE_NUM_SAMPLES:-100}"
 SAMPLING_BATCH_SIZE="${SAMPLING_BATCH_SIZE:-25}"
@@ -67,179 +54,6 @@ model_label() {
     gpt-neox-20b) printf "gptneox20b" ;;
     *) slugify "${base,,}" | sed 's/p//g' ;;
   esac
-}
-
-append_wpmia_sweep_csv_row() {
-  local status="$1"
-  local length="$2"
-  local tau="$3"
-  local gamma="$4"
-  local result_name="$5"
-  local output_dir="$6"
-  local roc_path="$7"
-  local log_file="$8"
-
-  python - "$CSV_PATH" "$status" "$MODEL" "$DATA" "$length" "$tau" "$gamma" \
-    "$NUM_SHOTS" "$result_name" "$output_dir" "$roc_path" "$log_file" <<'PY'
-import csv
-import os
-import re
-import sys
-
-(
-    csv_path,
-    status,
-    model,
-    data,
-    length,
-    tau,
-    gamma,
-    num_shots,
-    result_name,
-    output_dir,
-    roc_path,
-    log_file,
-) = sys.argv[1:]
-
-metrics = {
-    "auc_pct": "",
-    "accuracy_pct": "",
-    "tpr1_fpr_pct": "",
-    "tpr5_fpr_pct": "",
-    "tpr10_fpr_pct": "",
-}
-pattern = re.compile(
-    r"AUC (?P<auc>[0-9.]+), Accuracy (?P<acc>[0-9.]+), "
-    r"TPR@1%FPR of (?P<tpr1>[0-9.]+), TPR@5%FPR of (?P<tpr5>[0-9.]+), "
-    r"TPR@10%FPR of (?P<tpr10>[0-9.]+)"
-)
-
-if os.path.exists(log_file):
-    with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            match = pattern.search(line)
-            if match:
-                metrics = {
-                    "auc_pct": match.group("auc"),
-                    "accuracy_pct": match.group("acc"),
-                    "tpr1_fpr_pct": match.group("tpr1"),
-                    "tpr5_fpr_pct": match.group("tpr5"),
-                    "tpr10_fpr_pct": match.group("tpr10"),
-                }
-
-row = {
-    "status": status,
-    "model": model,
-    "data": data,
-    "sub_dataset": f"WikiMIA_length{length}",
-    "length": length,
-    "tau": tau,
-    "gamma": gamma,
-    "num_shots": num_shots,
-    "result_name": result_name,
-    "output_dir": output_dir,
-    "roc_path": roc_path,
-    "log_file": log_file,
-    **metrics,
-}
-
-fieldnames = [
-    "status",
-    "model",
-    "data",
-    "sub_dataset",
-    "length",
-    "tau",
-    "gamma",
-    "num_shots",
-    "auc_pct",
-    "accuracy_pct",
-    "tpr1_fpr_pct",
-    "tpr5_fpr_pct",
-    "tpr10_fpr_pct",
-    "result_name",
-    "output_dir",
-    "roc_path",
-    "log_file",
-]
-
-write_header = not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0
-with open(csv_path, "a", encoding="utf-8", newline="") as f:
-    writer = csv.DictWriter(f, fieldnames=fieldnames)
-    if write_header:
-        writer.writeheader()
-    writer.writerow(row)
-PY
-}
-
-run_wpmia_sweep() {
-  RUN_ROOT="${RUN_ROOT:-logs/wpmia/$(date +%Y%m%d_%H%M%S)_wikimia_pythia_wpmia}"
-  CSV_PATH="${CSV_PATH:-logs/wpmia/wikimia_pythia_wpmia_sweep.csv}"
-  mkdir -p "$RUN_ROOT" "$(dirname "$CSV_PATH")"
-
-  local model_base data_base
-  model_base="${MODEL##*/}"
-  data_base="${DATA##*/}"
-
-  echo "Run root: $RUN_ROOT"
-  echo "CSV: $CSV_PATH"
-  echo "Model: $MODEL"
-  echo "Lengths: $LENGTHS"
-  echo "Tau values: $TAUS"
-  echo "Gamma values: $GAMMAS"
-
-  for length in $LENGTHS; do
-    local sub_dataset output_dir
-    sub_dataset="WikiMIA_length${length}"
-    output_dir="simmia_out/${data_base}/${sub_dataset}/${model_base}/${NUM_SHOTS}"
-
-    for tau in $TAUS; do
-      local tau_slug
-      tau_slug="$(format_param_slug "$tau")"
-      for gamma in $GAMMAS; do
-        local gamma_slug result_name roc_path log_file status
-        gamma_slug="$(format_param_slug "$gamma")"
-        result_name="wpmia_len${length}_tau_${tau_slug}_gamma_${gamma_slug}"
-        roc_path="${output_dir}/${result_name}_roc_tpr_at_5_fpr.png"
-        log_file="${RUN_ROOT}/$(slugify "${sub_dataset}_${result_name}").log"
-
-        cmd=(
-          bash scripts/run_wpmia.sh
-          "$MODEL"
-          "$DATA"
-          "$sub_dataset"
-          "$GPU_IDS"
-          "$CONCURRENCY"
-        )
-        if [[ -n "$SAMPLING_BATCH_SIZE" ]]; then
-          cmd+=(--params "sampling_batch_size:${SAMPLING_BATCH_SIZE}")
-        fi
-        cmd+=("--num_shots" "$NUM_SHOTS")
-        cmd+=("${EXTRA_ARGS[@]}")
-
-        echo "[START] length=${length} tau=${tau} gamma=${gamma}"
-        echo "COMMAND: WPMIA_TAU=${tau} WPMIA_GAMMA=${gamma} WPMIA_RESULT_NAME=${result_name} ${cmd[*]}" > "$log_file"
-        echo >> "$log_file"
-
-        status="ok"
-        if ! WPMIA_TAU="$tau" WPMIA_GAMMA="$gamma" WPMIA_RESULT_NAME="$result_name" \
-          "${cmd[@]}" 2>&1 | tee -a "$log_file"; then
-          status="failed"
-        fi
-
-        append_wpmia_sweep_csv_row "$status" "$length" "$tau" "$gamma" "$result_name" \
-          "$output_dir" "$roc_path" "$log_file"
-
-        echo "[DONE] length=${length} tau=${tau} gamma=${gamma} status=${status}"
-        if [[ "$status" != "ok" && "$CONTINUE_ON_ERROR" != "1" ]]; then
-          echo "Stopping after failed run. Set CONTINUE_ON_ERROR=1 to keep sweeping." >&2
-          exit 1
-        fi
-      done
-    done
-  done
-
-  echo "Finished. CSV written to $CSV_PATH"
 }
 
 append_ablation_csv_row() {
@@ -623,16 +437,4 @@ run_ablation() {
 
 model_base="${MODEL##*/}"
 data_base="${DATA##*/}"
-
-case "$MODE" in
-  wpmia_sweep|sweep)
-    run_wpmia_sweep
-    ;;
-  ablation)
-    run_ablation
-    ;;
-  *)
-    echo "Unknown MODE='$MODE'. Use MODE=wpmia_sweep or MODE=ablation." >&2
-    exit 2
-    ;;
-esac
+run_ablation
