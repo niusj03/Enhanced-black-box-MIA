@@ -29,9 +29,14 @@ class OpenaiAPI(APILLM):
                 "OPENAI_API_KEY environment variable is required for GPT models. "
                 "Please set it using: export OPENAI_API_KEY='your-api-key'"
             )
-        self.client = AsyncOpenAI(
-            api_key=api_key,
+        client_kwargs = {"api_key": api_key}
+        base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get(
+            "OPENAI_API_BASE"
         )
+        if base_url:
+            client_kwargs["base_url"] = base_url
+            logger.info("Using OpenAI-compatible API base URL: %s", base_url)
+        self.client = AsyncOpenAI(**client_kwargs)
 
     async def async_generate(
         self, system_prompt: str, user_message: str, num_returns: int, **kwargs
