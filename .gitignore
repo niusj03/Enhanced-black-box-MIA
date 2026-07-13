@@ -220,4 +220,13 @@ simmia_out/
 samia_out/
 ablation/
 
+# Rebuttal experiment outputs (keep scripts under this directory tracked)
+scripts_output_rebuttal/cache/
+scripts_output_rebuttal/logs/
+scripts_output_rebuttal/scores/
+scripts_output_rebuttal/roc/
+scripts_output_rebuttal/temperature_sensitivity/
+scripts_output_rebuttal/*.csv
+scripts_output_rebuttal/*.md
+scripts_output_rebuttal/*.json
 /.vscode
